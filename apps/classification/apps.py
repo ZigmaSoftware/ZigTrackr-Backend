@@ -1,0 +1,8 @@
+from django.apps import AppConfig
+
+
+class ClassificationConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "apps.classification"
+    label = "classification"
+    verbose_name = "Classification"

@@ -1,0 +1,16 @@
+[Unit]
+Description=ZigTrackr ASGI HTTP and WebSocket server
+After=network.target mariadb.service redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=administrator
+WorkingDirectory=/home/administrator/Bug-Tracker/Backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
+ExecStart=/home/administrator/Bug-Tracker/Backend/.venv/bin/daphne -b 127.0.0.1 -p 8021 config.asgi:application
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

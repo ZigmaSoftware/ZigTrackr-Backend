@@ -1,0 +1,37 @@
+# ---- CORE ----
+Django==6.0.7
+djangorestframework==3.17.1
+mysqlclient==2.2.8
+
+# ---- AUTH ----
+djangorestframework-simplejwt==5.5.1
+PyJWT==2.10.1
+
+# ---- API ----
+django-cors-headers==4.9.0
+django-filter==26.1
+drf-spectacular==0.28.0
+
+# ---- CONFIG ----
+python-dotenv==1.2.2
+
+# ---- CLASSIFICATION ----
+# Deterministic typo tolerance for mail classification (spec 17). Not AI.
+rapidfuzz==3.10.1
+# HTML sanitisation for untrusted inbound email bodies (spec 10.1, 45).
+nh3==0.2.20
+
+# ---- FILES / EXPORT ----
+Pillow==11.1.0
+openpyxl==3.1.5
+
+# ---- SERVER ----
+gunicorn==23.0.0
+whitenoise==6.9.0
+channels==4.3.2
+channels-redis==4.3.0
+daphne==4.2.3
+
+# ---- ASYNC MAIL INTAKE ----
+celery==5.5.3
+redis==6.4.0

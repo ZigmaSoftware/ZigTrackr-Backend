@@ -1,0 +1,16 @@
+[Unit]
+Description=ZigTrackr outbound requester mail worker
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+User=administrator
+WorkingDirectory=/home/administrator/Bug-Tracker/Backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.prod
+ExecStart=/home/administrator/Bug-Tracker/Backend/.venv/bin/celery -A config.celery.app worker --loglevel=INFO --queues=mail-outbound --concurrency=2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
