@@ -80,6 +80,11 @@ class UnwantedMailTests(SimpleTestCase):
         self.assertFalse(result.is_valid)
         self.assertEqual(result.error_code, MailErrorCode.NO_REPLY)
 
+    def test_provider_no_reply_alias_is_rejected(self):
+        result = validate_mail(make_parsed(sender="google-noreply@google.com"))
+        self.assertFalse(result.is_valid)
+        self.assertEqual(result.error_code, MailErrorCode.NO_REPLY)
+
 
 class RecipientTests(SimpleTestCase):
     def test_recipient_not_intake_mailbox_rejected(self):

@@ -73,6 +73,22 @@ class WorkTransitionApiTests(TestCase):
         ticket.refresh_from_db()
         self.assertEqual(ticket.status, TicketStatus.IN_PROGRESS)
 
+    def test_list_exposes_latest_work_session_start(self):
+        ticket = self.ticket()
+        started = self.move(self.developer, ticket, "IN_PROGRESS")
+        self.assertEqual(started.status_code, 200, started.content)
+        first_start = started.json()["data"]["current_work_started_at"]
+        self.assertIsNotNone(first_start)
+
+        listed = self.login(self.developer).get("/api/v1/tickets/", {"search": ticket.ref_no})
+        self.assertEqual(listed.status_code, 200, listed.content)
+        self.assertEqual(listed.json()["data"]["results"][0]["current_work_started_at"], first_start)
+
+        self.assertEqual(self.move(self.developer, ticket, "PENDING").status_code, 200)
+        resumed = self.move(self.developer, ticket, "IN_PROGRESS")
+        self.assertEqual(resumed.status_code, 200, resumed.content)
+        self.assertNotEqual(resumed.json()["data"]["current_work_started_at"], first_start)
+
     def test_full_path_to_testing_then_closed_by_a_tester(self):
         ticket = self.ticket()
         self.move(self.developer, ticket, "IN_PROGRESS")

@@ -65,6 +65,50 @@ class UserManagementTestCase(TestCase):
 
 
 class CreateUserTests(UserManagementTestCase):
+    def test_create_without_removed_fields_keeps_model_defaults(self):
+        self.login(self.admin)
+        response = self.client.post(
+            "/api/v1/users/", content_type="application/json",
+            data={"username": "simpleprofile", "email": "simple@example.test",
+                  "full_name": "Simple Profile", "employee_code": "NEW001", "phone": "1234567890",
+                  "password": "StrongPass@123", "roles": ["DEVELOPER"]},
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        user = User.objects.get(username="simpleprofile")
+        self.assertEqual(user.designation, "")
+        self.assertIsNone(user.department_id)
+        self.assertIsNone(user.team_id)
+        self.assertIsNone(user.site_id)
+        self.assertTrue(user.check_password("StrongPass@123"))
+        self.assertEqual(user.employee_code, "NEW001")
+        self.assertEqual(user.phone, "1234567890")
+
+    def test_removed_fields_and_fk_aliases_are_rejected_on_create(self):
+        self.login(self.admin)
+        for field in ("designation", "department", "team", "site", "department_id", "team_id", "site_id"):
+            with self.subTest(field=field):
+                response = self.client.post(
+                    "/api/v1/users/", content_type="application/json",
+                    data={"username": f"retired_{field}", "password": "StrongPass@123", field: None},
+                )
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json()["errors"])
+                self.assertFalse(User.objects.filter(username=f"retired_{field}").exists())
+
+    def test_write_serializer_does_not_expose_removed_fields(self):
+        from apps.accounts.serializers import UserWriteSerializer
+
+        fields = UserWriteSerializer().fields
+        self.assertTrue({"designation", "department", "team", "site"}.isdisjoint(fields))
+        self.assertTrue({"username", "email", "password", "full_name", "employee_code", "phone", "roles"}.issubset(fields))
+
+    def test_non_object_create_payload_is_validation_error(self):
+        self.login(self.admin)
+        for payload in ([], [{"team": None}], "not an object"):
+            with self.subTest(payload=payload):
+                response = self.client.post("/api/v1/users/", data=payload, content_type="application/json")
+                self.assertEqual(response.status_code, 400, response.content)
+
     def test_admin_can_create_user_with_role(self):
         self.login(self.admin)
         response = self.client.post(
@@ -167,6 +211,40 @@ class CreateUserTests(UserManagementTestCase):
 
 
 class UpdateUserTests(UserManagementTestCase):
+    def test_edit_preserves_existing_organization_values(self):
+        from apps.masters.models import DepartmentMaster, SiteMaster, TeamMaster
+
+        self.dev.designation = "Existing developer"
+        self.dev.department = DepartmentMaster.objects.create(name="Existing department")
+        self.dev.team = TeamMaster.objects.create(name="Existing team")
+        self.dev.site = SiteMaster.objects.create(name="Existing site")
+        self.dev.save()
+        previous = (self.dev.designation, self.dev.department_id, self.dev.team_id, self.dev.site_id)
+        self.login(self.admin)
+        response = self.client.patch(
+            f"/api/v1/users/{self.dev.unique_id}/", content_type="application/json",
+            data={"full_name": "Renamed Developer", "roles": ["DEVELOPER"]},
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.dev.refresh_from_db()
+        self.assertEqual(self.dev.full_name, "Renamed Developer")
+        self.assertEqual((self.dev.designation, self.dev.department_id, self.dev.team_id, self.dev.site_id), previous)
+
+    def test_removed_inputs_rejected_without_partial_profile_changes(self):
+        self.login(self.admin)
+        previous_name = self.dev.full_name
+        for field in ("designation", "department", "team", "site", "department_id", "team_id", "site_id"):
+            with self.subTest(field=field):
+                response = self.client.patch(
+                    f"/api/v1/users/{self.dev.unique_id}/", content_type="application/json",
+                    data={"full_name": "Must not be applied", "roles": [], field: None},
+                )
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn(field, response.json()["errors"])
+                self.dev.refresh_from_db()
+                self.assertEqual(self.dev.full_name, previous_name)
+                self.assertTrue(UserRole.objects.filter(user=self.dev, role=self.roles["DEVELOPER"], is_active=True).exists())
+
     def test_admin_can_update_profile_fields(self):
         self.login(self.admin)
         response = self.client.patch(
@@ -212,6 +290,23 @@ class UpdateUserTests(UserManagementTestCase):
         from common.permissions.require import resolve_permission_codes
         self.dev.refresh_from_db()
         self.assertEqual(resolve_permission_codes(self.dev), set())
+
+
+class UserProfileServiceTests(UserManagementTestCase):
+    def test_direct_service_calls_cannot_write_removed_fields(self):
+        from django.core.exceptions import ValidationError
+        from apps.accounts.services.user_service import create_user, update_user
+
+        original_name = self.dev.full_name
+        for field in ("designation", "department", "team", "site", "department_id", "team_id", "site_id"):
+            with self.subTest(field=field):
+                with self.assertRaises(ValidationError):
+                    create_user(actor=self.admin, username=f"service_{field}", password="StrongPass@123", **{field: None})
+                self.assertFalse(User.objects.filter(username=f"service_{field}").exists())
+                with self.assertRaises(ValidationError):
+                    update_user(user=self.dev, actor=self.admin, roles=[], full_name="Must not change", **{field: None})
+                self.assertEqual(self.dev.full_name, original_name)
+                self.assertTrue(UserRole.objects.filter(user=self.dev, role=self.roles["DEVELOPER"], is_active=True).exists())
 
 
 class DeactivateReactivateTests(UserManagementTestCase):

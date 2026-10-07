@@ -1,6 +1,6 @@
 """Dashboard KPI aggregation (spec 21.2, 32)."""
 
-from django.db.models import Avg, Count, Q
+from django.db.models import Avg, Case, CharField, Count, F, Q, When
 
 from apps.bugs.constants import DAILY_UPDATE_REQUIRED_STATUSES, TERMINAL_STATUSES, BugStatus
 from apps.bugs.models import Bug
@@ -22,24 +22,27 @@ def dashboard_kpis(user, today=None):
     most frequently loaded screen in the app.
     """
     today = today or local_today()
-    ticket_qs = scope_ticket_queryset(base_ticket_queryset(today), user)
+    ticket_qs = scope_ticket_queryset(base_ticket_queryset(today), user).annotate(
+        # Linked bug state is authoritative, rather than the mirrored status.
+        workflow_status=Case(When(bug__isnull=False, then=F("bug__status")),
+                             default=F("status"), output_field=CharField()),
+    )
     orphan_bugs = scope_bug_queryset(
         base_bug_queryset(today).filter(support_ticket__isnull=True), user
     )
     month_start = today.replace(day=1)
-    ticket_not_terminal = ~Q(status__in=TERMINAL_TICKET_STATUSES) & ~Q(bug__status__in=TERMINAL_STATUSES)
+    ticket_not_terminal = ~Q(workflow_status__in=TERMINAL_TICKET_STATUSES)
     bug_not_terminal = ~Q(status__in=TERMINAL_STATUSES)
 
     tickets = ticket_qs.aggregate(
         total_open=Count("id", filter=ticket_not_terminal),
         new_today=Count("id", filter=Q(created_at__date=today)),
-        assigned=Count("id", filter=Q(status=TicketStatus.ASSIGNED) | Q(bug__status=BugStatus.ASSIGNED)),
-        in_progress=Count("id", filter=Q(status=TicketStatus.IN_PROGRESS) | Q(bug__status=BugStatus.IN_PROGRESS)),
-        testing=Count("id", filter=Q(bug__status=BugStatus.TESTING)),
-        resolved=Count("id", filter=Q(bug__status=BugStatus.RESOLVED) | Q(status=TicketStatus.COMPLETED)),
-        on_hold=Count("id", filter=Q(bug__status=BugStatus.ON_HOLD)),
-        reopened=Count("id", filter=Q(bug__status=BugStatus.REOPENED)
-                       | Q(bug__isnull=True, status=TicketStatus.REOPENED)),
+        assigned=Count("id", filter=Q(workflow_status=TicketStatus.ASSIGNED)),
+        in_progress=Count("id", filter=Q(workflow_status=TicketStatus.IN_PROGRESS)),
+        testing=Count("id", filter=Q(workflow_status=TicketStatus.TESTING)),
+        resolved=Count("id", filter=Q(workflow_status__in=(BugStatus.RESOLVED, TicketStatus.COMPLETED))),
+        on_hold=Count("id", filter=Q(workflow_status=TicketStatus.ON_HOLD)),
+        reopened=Count("id", filter=Q(workflow_status=TicketStatus.REOPENED)),
         critical=Count("id", filter=(Q(priority__code="CRITICAL") | Q(bug__priority__code="CRITICAL")) & ticket_not_terminal),
         high=Count("id", filter=(Q(priority__code="HIGH") | Q(bug__priority__code="HIGH")) & ticket_not_terminal),
         overdue=Count("id", filter=Q(is_overdue=True)),

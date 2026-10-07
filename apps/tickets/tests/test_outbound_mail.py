@@ -7,6 +7,7 @@ from django.db import transaction
 from django.test import TestCase, override_settings
 
 from apps.tickets.models import OutboundMail
+from apps.tickets.services.ack_service import should_acknowledge
 from apps.tickets.services.outbound_mail import (
     queue_acknowledgement, queue_assigned_notice, queue_closed_notice,
 )
@@ -16,6 +17,10 @@ from apps.tickets.tests.factories import make_ticket
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class OutboundMailTests(TestCase):
+    def test_no_reply_provider_alias_never_receives_automated_mail(self):
+        self.assertFalse(should_acknowledge("google-noreply@google.com"))
+        self.assertTrue(should_acknowledge("person@google.com"))
+
     def test_ack_is_queued_with_stable_thread_id_and_sent_once(self):
         ticket = make_ticket()
         with transaction.atomic():

@@ -1,12 +1,14 @@
 """User serializers."""
 
+from collections.abc import Mapping
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from apps.accounts.models import Permission, Role, UserRole
-from apps.masters.models import DepartmentMaster, SiteMaster, TeamMaster
+from apps.accounts.services.user_service import validate_user_profile_fields
 
 User = get_user_model()
 
@@ -52,10 +54,25 @@ class PermissionSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class SubmoduleChangeSerializer(serializers.Serializer):
+    key = serializers.CharField(max_length=200)
+    enabled = serializers.BooleanField()
+
+
 class RolePermissionUpdateSerializer(serializers.Serializer):
     permissions = serializers.ListField(
-        child=serializers.CharField(), allow_empty=True,
+        child=serializers.CharField(), allow_empty=True, required=False,
     )
+    submodule_changes = SubmoduleChangeSerializer(many=True, required=False, allow_empty=False)
+
+    def validate(self, attrs):
+        if ("permissions" in attrs) == ("submodule_changes" in attrs):
+            raise serializers.ValidationError("Provide permissions or submodule_changes, not both.")
+        changes = attrs.get("submodule_changes", [])
+        keys = [change["key"] for change in changes]
+        if len(keys) != len(set(keys)):
+            raise serializers.ValidationError({"submodule_changes": ["Each submodule may appear only once."]})
+        return attrs
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -91,15 +108,6 @@ class UserWriteSerializer(serializers.ModelSerializer):
 
     id = serializers.UUIDField(source="unique_id", read_only=True)
     password = serializers.CharField(write_only=True, required=False, min_length=8)
-    department = serializers.SlugRelatedField(
-        slug_field="unique_id", required=False, allow_null=True,
-        queryset=DepartmentMaster.objects.filter(is_deleted=False))
-    team = serializers.SlugRelatedField(
-        slug_field="unique_id", required=False, allow_null=True,
-        queryset=TeamMaster.objects.filter(is_deleted=False))
-    site = serializers.SlugRelatedField(
-        slug_field="unique_id", required=False, allow_null=True,
-        queryset=SiteMaster.objects.filter(is_deleted=False))
     # Role codes rather than role UUIDs: the caller picks from the same fixed
     # list ROLE_DEFINITIONS seeds, and a code is what every other part of this
     # codebase (ROLE_PERMISSIONS, seed_demo_users) already keys on.
@@ -111,8 +119,18 @@ class UserWriteSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             "id", "username", "email", "password", "full_name", "employee_code",
-            "phone", "designation", "department", "team", "site", "is_active", "roles",
+            "phone", "is_active", "roles",
         ]
+
+    def to_internal_value(self, data):
+        # DRF normally ignores undeclared fields. Reject retired inputs
+        # explicitly so a stale client cannot report that these were saved.
+        try:
+            if isinstance(data, Mapping):
+                validate_user_profile_fields(data)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.message_dict) from exc
+        return super().to_internal_value(data)
 
     def validate_username(self, value):
         qs = User.objects.filter(username__iexact=value, is_deleted=False)

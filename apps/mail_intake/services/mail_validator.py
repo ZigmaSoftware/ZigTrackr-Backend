@@ -20,6 +20,7 @@ from apps.mail_intake.services.mail_normalizer import (
     has_meaningful_content,
     html_to_text,
 )
+from apps.mail_intake.services.sender_rules import is_no_reply_address
 
 # Deliberately permissive. This rejects only the obviously broken; full RFC 5322
 # address parsing would reject real addresses that mail servers accept, and the
@@ -27,10 +28,6 @@ from apps.mail_intake.services.mail_normalizer import (
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 _BOUNCE_SENDERS = ("mailer-daemon@", "postmaster@")
-_NO_REPLY_LOCAL_RE = re.compile(
-    r"^(?:no[-_.]?reply|donotreply|do[-_.]?not[-_.]?reply)$",
-    flags=re.IGNORECASE,
-)
 _PROMOTIONAL_SUBJECT_TERMS = (
     "advertisement",
     "newsletter",
@@ -74,8 +71,7 @@ def is_valid_address(value):
 
 def is_no_reply(parsed):
     """Detect senders that explicitly do not accept replies."""
-    local_part = (parsed.from_email or "").strip().lower().rsplit("@", 1)[0]
-    return bool(local_part and _NO_REPLY_LOCAL_RE.fullmatch(local_part))
+    return is_no_reply_address(parsed.from_email)
 
 
 def _contains_term(value, term):
@@ -218,4 +214,3 @@ def validate_mail(
             parsed.body_text, parsed.body_html
         )
     return validate_content(subject=parsed.subject, cleaned_body=cleaned_body)
-

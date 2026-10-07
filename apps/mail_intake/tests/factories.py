@@ -15,7 +15,7 @@ from apps.mail_intake.services.mail_normalizer import compute_dedupe_key, normal
 from apps.mail_intake.services.mail_parser import parse_raw_email
 
 DEFAULT_SENDER = "sadham@zigmaglobal.in"
-DEFAULT_MAILBOX = "bperp23@gmail.com"
+DEFAULT_MAILBOX = "itdesk@zigma.in"
 
 
 def make_raw_email(

@@ -16,9 +16,10 @@ from django.db.models import (
 from django.db.models.functions import Coalesce
 
 from apps.bugs.constants import TERMINAL_STATUSES as BUG_TERMINAL_STATUSES
+from apps.bugs.models import BugStatusHistory
 from apps.mail_intake.models import MailIntake
-from apps.tickets.constants import TERMINAL_TICKET_STATUSES
-from apps.tickets.models import SupportTicket, TicketUpdate
+from apps.tickets.constants import TERMINAL_TICKET_STATUSES, TicketStatus
+from apps.tickets.models import SupportTicket, TicketActivity, TicketUpdate
 from common.db.functions import DateDiff
 from common.utils.dates import local_today
 
@@ -53,6 +54,17 @@ def with_ticket_computed(queryset, today=None):
         MailIntake.objects.filter(linked_ticket_id=OuterRef("pk"), is_thread_reply=False)
         .order_by("id").values("received_at")[:1]
     )
+    latest_work_start = (
+        TicketActivity.objects.filter(
+            ticket_id=OuterRef("pk"),
+            event_type__in=("WORK_STARTED", "RETURNED_TO_DEVELOPER", "BUG_STATUS_IN_PROGRESS"),
+        ).order_by("-occurred_at", "-pk").values("occurred_at")[:1]
+    )
+    latest_bug_start = (
+        BugStatusHistory.objects.filter(
+            bug_id=OuterRef("bug_id"), to_status=TicketStatus.IN_PROGRESS,
+        ).order_by("-changed_at", "-pk").values("changed_at")[:1]
+    )
     terminal_q = Q(status__in=TERMINAL_TICKET_STATUSES) | Q(bug__status__in=BUG_TERMINAL_STATUSES)
     overdue_q = (
         Q(expected_closure_date__isnull=False)
@@ -65,6 +77,10 @@ def with_ticket_computed(queryset, today=None):
     )
     return queryset.annotate(
         original_mail_received_at=Subquery(original_mail_received_at),
+        current_work_started_at=Coalesce(
+            Subquery(latest_work_start, output_field=DateTimeField()),
+            Subquery(latest_bug_start, output_field=DateTimeField()),
+        ),
         effective_expected_closure_date=Coalesce(
             "bug__expected_closure_date", "expected_closure_date"
         ),

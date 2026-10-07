@@ -56,6 +56,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
     is_overdue = serializers.BooleanField(read_only=True)
     overdue_days = serializers.IntegerField(read_only=True)
     latest_update_at = serializers.DateTimeField(source="effective_last_update_at", read_only=True)
+    current_work_started_at = serializers.DateTimeField(read_only=True)
     reference = serializers.CharField(read_only=True)
     mail_id = serializers.SerializerMethodField()
     # When the message actually arrived, which for an emailed request is not the
@@ -85,7 +86,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
             "title", "project", "module", "priority", "owner", "reported_by",
             "reported_by_email", "reported_by_name", "bug_no", "bug_id",
             "expected_closure_date", "effective_expected_closure_date",
-            "age_days", "is_overdue", "overdue_days", "latest_update_at",
+            "age_days", "is_overdue", "overdue_days", "latest_update_at", "current_work_started_at",
             "created_at", "can_reassign", "can_delete", "reassign_block_reason",
             "allowed_actions", "chat_state",
         ]

@@ -8,6 +8,8 @@ adding a line here and re-running the seed.
 Codename format: "<module>.<screen>.<action>".
 """
 
+from common.permissions.ticket_submodules import TICKET_PAGE_PERMISSIONS, TICKET_SUBMODULES
+
 # (codename, name, module, screen_code, screen_name, action)
 PERMISSION_CATALOG = [
     # ---- DASHBOARD ----
@@ -126,6 +128,7 @@ PERMISSION_CATALOG = [
     ("access.request.implement", "Implement Access Change", "access", "request", "Access Requests", "use"),
 ]
 
+PERMISSION_CATALOG += TICKET_PAGE_PERMISSIONS
 ALL_CODENAMES = [row[0] for row in PERMISSION_CATALOG]
 
 # ---- ROLE DEFINITIONS (spec 14) ----
@@ -237,3 +240,10 @@ ROLE_PERMISSIONS = {
         "access.request.view",
     ],
 }
+
+# New installations retain the same page visibility as the former shared gates.
+# Do not grant new actions here: full bundles require an explicit matrix edit.
+for _grants in ROLE_PERMISSIONS.values():
+    for _key, _name, _group, _legacy, _actions in TICKET_SUBMODULES:
+        if _legacy in _grants and f"tickets.{_key}.access" not in _grants:
+            _grants.append(f"tickets.{_key}.access")

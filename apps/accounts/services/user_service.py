@@ -9,6 +9,7 @@ entirely. Going through this module is what a User Management screen is for.
 """
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from apps.accounts.models import Role, UserRole
@@ -16,6 +17,19 @@ from apps.audit.models import AuditAction
 from common.services.audit import record_audit
 
 User = get_user_model()
+
+# Retain legacy organisation data for visibility rules and reporting, but do
+# not expose it as writable input in User Management (including FK aliases).
+REMOVED_PROFILE_FIELDS = frozenset({
+    "designation", "department", "team", "site", "department_id", "team_id", "site_id",
+})
+
+
+def validate_user_profile_fields(fields):
+    removed = REMOVED_PROFILE_FIELDS.intersection(fields)
+    if removed:
+        raise ValidationError({field: ["This field is no longer editable in User Management."]
+                               for field in sorted(removed)})
 
 
 @transaction.atomic
@@ -27,6 +41,7 @@ def create_user(*, actor, request=None, roles=None, password, **fields):
     Accepting `roles` here as part of creation, rather than as a follow-up
     step someone can forget, is deliberate.
     """
+    validate_user_profile_fields(fields)
     user = User(**fields, created_by=getattr(actor, "unique_id", None),
                updated_by=getattr(actor, "unique_id", None))
     user.set_password(password)
@@ -48,6 +63,7 @@ def update_user(*, user, actor, request=None, roles=None, **fields):
     silently changes as a side effect of an unrelated edit, which is exactly
     the kind of surprise that produces support tickets like this one.
     """
+    validate_user_profile_fields(fields)
     changes = {}
     for field, value in fields.items():
         if not hasattr(user, field):

@@ -24,6 +24,7 @@ from django.utils import timezone
 from apps.audit.models import AuditAction
 from apps.mail_intake.constants import NO_ACK_LOCAL_PARTS
 from apps.mail_intake.services.mail_parser import strip_angle_brackets
+from apps.mail_intake.services.sender_rules import is_no_reply_address
 from common.services.audit import record_audit
 
 logger = logging.getLogger(__name__)
@@ -180,7 +181,10 @@ def should_acknowledge(to_email):
         return False
 
     local_part = address.split("@", 1)[0]
-    return not any(local_part.startswith(prefix) for prefix in NO_ACK_LOCAL_PARTS)
+    return (
+        not is_no_reply_address(address)
+        and not any(local_part.startswith(prefix) for prefix in NO_ACK_LOCAL_PARTS)
+    )
 
 
 def send_ticket_acknowledgement(*, ticket, to_email, in_reply_to="", request=None):

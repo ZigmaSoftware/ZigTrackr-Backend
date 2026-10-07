@@ -1,7 +1,6 @@
 """User, role and permission endpoints (spec 16 Administration)."""
 
 from django.contrib.auth import get_user_model
-from django.db import transaction
 from django.db.models import Count
 from django.db.models import Prefetch
 from rest_framework import viewsets
@@ -11,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
 from apps.accounts.models import Permission, Role, RolePermission, UserRole
+from apps.accounts.services.permission_service import permission_submodules, update_role_grants
 from apps.accounts.serializers import (
     PermissionSerializer,
     RoleLiteSerializer,
@@ -22,7 +22,6 @@ from apps.accounts.serializers import (
     UserWriteSerializer,
 )
 from apps.audit.models import AuditAction
-from common.permissions.codenames import ROLE_ADMIN
 from apps.accounts.services.user_service import (
     create_user,
     deactivate_user,
@@ -32,7 +31,7 @@ from apps.accounts.services.user_service import (
 )
 from common.permissions.require import RequirePermission
 from common.responses import EnvelopeMessageMixin, created, ok
-from common.services.audit import record_audit, record_field_changes
+from common.services.audit import record_field_changes
 from common.viewsets import PermissionByActionMixin
 
 User = get_user_model()
@@ -180,14 +179,6 @@ class UserViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
         return ok(UserLiteSerializer(qs, many=True).data, message="Assignable users retrieved.")
 
 
-PROTECTED_ADMIN_PERMISSIONS = {
-    "admin.role.view",
-    "admin.role.manage",
-    "admin.permission.view",
-    "admin.permission.manage",
-}
-
-
 class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelViewSet):
     serializer_class = RoleLiteSerializer
     lookup_field = "unique_id"
@@ -256,63 +247,14 @@ class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
         role = self.get_object()
         serializer = RolePermissionUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        wanted = set(serializer.validated_data["permissions"])
-        active_permissions = {
-            p.codename: p
-            for p in Permission.objects.filter(is_active=True, is_deleted=False)
-        }
-        unknown = wanted - set(active_permissions)
-        if unknown:
-            raise ValidationError({
-                "permissions": [f"Unknown permission(s): {', '.join(sorted(unknown))}."]
-            })
-        if role.code == ROLE_ADMIN and not PROTECTED_ADMIN_PERMISSIONS.issubset(wanted):
-            raise ValidationError({
-                "permissions": [
-                    "The Admin role must keep role and permission management access."
-                ]
-            })
-
-        with transaction.atomic():
-            existing = set(
-                RolePermission.objects
-                .select_for_update()
-                .filter(role=role)
-                .values_list("permission__codename", flat=True)
-            )
-            to_add = wanted - existing
-            to_remove = existing - wanted
-            if to_remove:
-                RolePermission.objects.filter(
-                    role=role, permission__codename__in=to_remove
-                ).delete()
-            RolePermission.objects.bulk_create([
-                RolePermission(
-                    role=role,
-                    permission=active_permissions[codename],
-                    created_by=getattr(request.user, "unique_id", None),
-                )
-                for codename in sorted(to_add)
-            ])
-            record_audit(
-                action=AuditAction.PERMISSION_CHANGED,
-                entity=role,
-                actor=request.user,
-                old_value=", ".join(sorted(existing)),
-                new_value=", ".join(sorted(wanted)),
-                remarks="Role permission grants updated.",
-                metadata={
-                    "added": sorted(to_add),
-                    "removed": sorted(to_remove),
-                },
-                request=request,
-            )
+        update_role_grants(role=role, actor=request.user, request=request,
+                           **serializer.validated_data)
         return ok(self._matrix_payload(), message="Role permissions updated.")
 
     @staticmethod
     def _matrix_payload():
-        permissions = Permission.objects.filter(is_active=True, is_deleted=False)
-        roles = Role.objects.filter(is_active=True, is_deleted=False).order_by("rank", "name")
+        permissions = list(Permission.objects.filter(is_active=True, is_deleted=False))
+        roles = list(Role.objects.filter(is_active=True, is_deleted=False).order_by("rank", "name"))
         grants = set(
             RolePermission.objects.values_list("role__code", "permission__codename")
         )
@@ -325,6 +267,11 @@ class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
                 "action": perm.action,
                 "roles": {r.code: (r.code, perm.codename) in grants for r in roles},
             })
+        submodules = permission_submodules(permissions)
+        # Action cells may be shared by multiple screens; keep each codename
+        # once, while placing the former generic ticket cells in their group.
+        shared_tickets = modules.pop("tickets", [])
+        modules.setdefault("ticket_management", []).extend(shared_tickets)
         return {
             "roles": [
                 {
@@ -335,7 +282,10 @@ class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
                 }
                 for r in roles
             ],
-            "modules": [{"module": m, "permissions": p} for m, p in modules.items()],
+            "modules": [{"module": m, "permissions": p,
+                         "submodules": [{k: v for k, v in group.items() if k != "module"}
+                                        for group in submodules.values() if group["module"] == m]}
+                        for m, p in modules.items()],
         }
 
 

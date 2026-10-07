@@ -6,10 +6,12 @@ from datetime import datetime, time, timedelta
 import django_filters
 from django.db.models import Q
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from apps.bugs.constants import BugStatus
 from apps.tickets.constants import TERMINAL_TICKET_STATUSES, TicketSource, TicketStatus, TicketType
 from apps.tickets.models import SupportTicket
+from common.permissions.require import has_permission
 
 
 class UUIDLookupFilter(django_filters.CharFilter):
@@ -25,6 +27,7 @@ class UUIDLookupFilter(django_filters.CharFilter):
 
 
 class TicketFilter(django_filters.FilterSet):
+    submodule = django_filters.CharFilter(method="filter_submodule")
     search = django_filters.CharFilter(method="filter_search")
     ticket_type = django_filters.MultipleChoiceFilter(choices=TicketType.choices)
     source = django_filters.MultipleChoiceFilter(choices=TicketSource.choices)
@@ -50,6 +53,33 @@ class TicketFilter(django_filters.FilterSet):
     class Meta:
         model = SupportTicket
         fields = []
+
+    def filter_submodule(self, queryset, name, value):
+        """Check the actual page gate and enforce its preset on the server.
+
+        Generic scoped lists remain available to chat and existing API clients.
+        A submodule grant is a page/action entitlement, not a new ownership tier.
+        """
+        presets = {
+            "all": {"assigned": True, "terminal": False},
+            "unassigned": {"unassigned": True, "terminal": False},
+            "reassign": {"reassignable": True},
+            "bugs": {"ticket_type": TicketType.BUG},
+            "services": {"ticket_type": TicketType.SERVICE_REQUEST},
+            "access": {"ticket_type": TicketType.ACCESS_REQUEST},
+            "critical": {"critical": True, "terminal": False},
+            "overdue": {"is_overdue": True, "terminal": False},
+            "testing": {"verification_queue": True},
+            "closed": {"terminal": True},
+        }
+        if value not in presets:
+            raise ValidationError({"submodule": ["Choose a valid ticket submodule."]})
+        if not has_permission(getattr(self.request, "user", None), f"tickets.{value}.access"):
+            raise PermissionDenied("You do not have access to this ticket submodule.")
+        for field, selected in presets[value].items():
+            method = getattr(self, f"filter_{field}", None)
+            queryset = method(queryset, field, selected) if method else queryset.filter(**{field: selected})
+        return queryset
 
     def _resolve_user(self, value):
         value = (value or "").strip()

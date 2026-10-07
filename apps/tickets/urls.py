@@ -1,5 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
+from apps.tickets.views.daily_updates import DailyUpdatesCalendarView, DailyUpdatesView
 
 from apps.tickets.views import (
     PublicTicketLookupView,
@@ -23,6 +24,8 @@ router.register("", SupportTicketViewSet, basename="ticket")
 # Listed before the router: it is registered at "", so its detail route would
 # otherwise match "attachments/<uuid>/" and treat "attachments" as a ticket id.
 urlpatterns = [
+    path("daily-updates/", DailyUpdatesView.as_view(), name="ticket-daily-updates"),
+    path("daily-updates/calendar/", DailyUpdatesCalendarView.as_view(), name="ticket-daily-calendar"),
     # Unauthenticated, rate limited. Before the router for the same reason as
     # the attachment paths.
     path("public/lookup/", PublicTicketLookupView.as_view(), name="ticket-public-lookup"),
