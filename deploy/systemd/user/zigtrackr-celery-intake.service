@@ -1,0 +1,14 @@
+[Unit]
+Description=ZigTrackr incoming mail worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/Bug-Tracker/ZigTrackr-Backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.lan
+ExecStart=/home/admin/Bug-Tracker/ZigTrackr-Backend/.venv/bin/celery -A config.celery.app worker --loglevel=INFO --queues=mail-intake --concurrency=1 --hostname=intake@%%h
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

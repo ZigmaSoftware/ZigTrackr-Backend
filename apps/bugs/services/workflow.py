@@ -21,7 +21,7 @@ ALLOWED_TRANSITIONS = {
     BugStatus.IN_PROGRESS: {BugStatus.TESTING, BugStatus.ON_HOLD, BugStatus.PENDING},
     BugStatus.PENDING: {BugStatus.IN_PROGRESS, BugStatus.ON_HOLD, BugStatus.TESTING},
     BugStatus.ON_HOLD: {BugStatus.IN_PROGRESS, BugStatus.PENDING, BugStatus.TESTING},
-    BugStatus.TESTING: {BugStatus.RESOLVED, BugStatus.IN_PROGRESS},
+    BugStatus.TESTING: {BugStatus.RESOLVED, BugStatus.IN_PROGRESS, BugStatus.ASSIGNED},
     BugStatus.RESOLVED: {BugStatus.CLOSED, BugStatus.REOPENED},
     BugStatus.CLOSED: {BugStatus.REOPENED},
     BugStatus.REOPENED: {BugStatus.ASSIGNED, BugStatus.IN_PROGRESS},

@@ -77,9 +77,17 @@ def with_ticket_computed(queryset, today=None):
     )
     return queryset.annotate(
         original_mail_received_at=Subquery(original_mail_received_at),
-        current_work_started_at=Coalesce(
-            Subquery(latest_work_start, output_field=DateTimeField()),
-            Subquery(latest_bug_start, output_field=DateTimeField()),
+        current_work_started_at=Case(
+            When(
+                Q(bug__status=TicketStatus.IN_PROGRESS)
+                | Q(bug__isnull=True, status=TicketStatus.IN_PROGRESS),
+                then=Coalesce(
+                    Subquery(latest_work_start, output_field=DateTimeField()),
+                    Subquery(latest_bug_start, output_field=DateTimeField()),
+                ),
+            ),
+            default=Value(None),
+            output_field=DateTimeField(),
         ),
         effective_expected_closure_date=Coalesce(
             "bug__expected_closure_date", "expected_closure_date"

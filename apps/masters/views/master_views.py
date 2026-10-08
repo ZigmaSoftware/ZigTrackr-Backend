@@ -114,11 +114,14 @@ class ProjectViewSet(BaseMasterViewSet):
     }
 
     def get_queryset(self):
-        return (
+        qs = (
             ProjectMaster.objects.filter(is_deleted=False)
             .select_related("project_lead")
             .annotate(module_count=Count("modules", filter=Q(modules__is_deleted=False)))
         )
+        if not self._include_inactive():
+            qs = qs.filter(is_active=True)
+        return qs
 
 
 class ModuleViewSet(BaseMasterViewSet):

@@ -43,7 +43,7 @@ class TransitionMapTests(SimpleTestCase):
             (S.IN_PROGRESS, S.PENDING),
             (S.PENDING, S.IN_PROGRESS),
             (S.PENDING, S.TESTING),
-            (S.TESTING, S.RESOLVED), (S.TESTING, S.IN_PROGRESS),
+            (S.TESTING, S.RESOLVED), (S.TESTING, S.IN_PROGRESS), (S.TESTING, S.ASSIGNED),
             (S.RESOLVED, S.CLOSED), (S.RESOLVED, S.REOPENED),
             (S.CLOSED, S.REOPENED),
             (S.REOPENED, S.ASSIGNED), (S.REOPENED, S.IN_PROGRESS),

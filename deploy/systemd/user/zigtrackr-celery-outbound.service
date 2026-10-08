@@ -1,0 +1,14 @@
+[Unit]
+Description=ZigTrackr outbound mail worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/Bug-Tracker/ZigTrackr-Backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.lan
+ExecStart=/home/admin/Bug-Tracker/ZigTrackr-Backend/.venv/bin/celery -A config.celery.app worker --loglevel=INFO --queues=mail-outbound --concurrency=2 --hostname=outbound@%%h
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

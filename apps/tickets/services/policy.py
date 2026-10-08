@@ -8,7 +8,7 @@ from common.permissions.scoping import can_mutate_ticket
 
 
 # A ticket remains routable until work is handed to verification. Failed tests
-# return it to IN_PROGRESS; requester reopenings return it to REOPENED.
+# return it to ASSIGNED; requester reopenings return it to REOPENED.
 REASSIGNABLE_STATUSES = (
     TicketStatus.NEW,
     TicketStatus.CONFIRMED,

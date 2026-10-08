@@ -270,7 +270,7 @@ def transition_work(*, ticket, actor, to_status, remarks="", payload=None, reque
 
     payload = payload or {}
     remarks = (remarks or "").strip()
-    if to_status in (TicketStatus.PENDING, TicketStatus.ON_HOLD, TicketStatus.TESTING, TicketStatus.CLOSED) and not remarks:
+    if to_status in (TicketStatus.ASSIGNED, TicketStatus.PENDING, TicketStatus.ON_HOLD, TicketStatus.TESTING, TicketStatus.CLOSED) and not remarks:
         raise WorkflowValidationError({"remarks": ["A description is required for this action."]})
 
     current = ticket.bug.status if ticket.bug_id else ticket.status
@@ -338,6 +338,7 @@ def transition_work(*, ticket, actor, to_status, remarks="", payload=None, reque
     ticket.save(update_fields=["status", "updated_by", "updated_at"])
 
     labels = {
+        TicketStatus.ASSIGNED: "Returned to the developer; awaiting work to start.",
         TicketStatus.IN_PROGRESS: "Work started.",
         TicketStatus.PENDING: "Moved to pending.",
         TicketStatus.ON_HOLD: "Put on hold.",
@@ -363,6 +364,7 @@ def transition_work(*, ticket, actor, to_status, remarks="", payload=None, reque
         request=request,
     )
     activity = {
+        TicketStatus.ASSIGNED: ("TICKET_RETURNED_TO_DEVELOPER", "Sent back to developer"),
         TicketStatus.IN_PROGRESS: ("RETURNED_TO_DEVELOPER" if previous == TicketStatus.TESTING else "WORK_STARTED", "Work started"),
         TicketStatus.PENDING: ("TICKET_PENDING", "Ticket moved to Pending"),
         TicketStatus.ON_HOLD: ("TICKET_ON_HOLD", "Ticket placed on Hold"),
@@ -370,11 +372,13 @@ def transition_work(*, ticket, actor, to_status, remarks="", payload=None, reque
         TicketStatus.CLOSED: ("TICKET_CLOSED", "Ticket Closed"),
     }
     event_type, title = activity[to_status]
-    if not ticket.bug_id:
+    if not ticket.bug_id or to_status == TicketStatus.ASSIGNED:
         record_activity(
             ticket=ticket, event_type=event_type, title=title,
             description=f"{actor.display_name} changed the ticket from {previous} to {to_status}. {remarks}".strip(),
-            public_description=(f"Your request is now {TicketStatus(to_status).label.lower()}."),
+            public_description=("Your request was sent back for further work and is waiting for development to start."
+                                if to_status == TicketStatus.ASSIGNED
+                                else f"Your request is now {TicketStatus(to_status).label.lower()}."),
             actor=actor,
         )
     return ticket

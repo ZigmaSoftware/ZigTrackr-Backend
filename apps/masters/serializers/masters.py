@@ -29,19 +29,29 @@ class UniqueNameMixin:
     scope_field = None
 
     def validate_name(self, value):
+        return value.strip()
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        value = attrs.get("name", getattr(self.instance, "name", None))
+        if value is None:
+            return attrs
         model = self.Meta.model
-        qs = model.objects.filter(name__iexact=value.strip(), is_deleted=False)
+        qs = model.objects.filter(name__iexact=value, is_deleted=False)
         if self.scope_field:
-            scope_value = self.initial_data.get(self.scope_field)
-            if scope_value:
-                qs = qs.filter(**{f"{self.scope_field}__unique_id": scope_value})
+            # Resolve relations before scoping names. Malformed UUIDs should
+            # return a field error, and PATCH can retain the existing parent.
+            parent = attrs.get(self.scope_field, getattr(self.instance, self.scope_field, None))
+            if parent is None:
+                return attrs
+            qs = qs.filter(**{self.scope_field: parent})
         if self.instance is not None:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError(
-                f"A {model._meta.verbose_name} with this name already exists."
+                {"name": [f"A {model._meta.verbose_name} with this name already exists."]}
             )
-        return value.strip()
+        return attrs
 
 
 class BaseMasterSerializer(UniqueNameMixin, serializers.ModelSerializer):
@@ -129,6 +139,10 @@ class ProjectSerializer(BaseMasterSerializer):
 
 class ModuleSerializer(BaseMasterSerializer):
     scope_field = "project"
+    project = serializers.SlugRelatedField(
+        slug_field="unique_id", write_only=True,
+        queryset=ProjectMaster.objects.filter(is_deleted=False),
+    )
     project_id = serializers.UUIDField(source="project.unique_id", read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
 
@@ -142,6 +156,10 @@ class ModuleSerializer(BaseMasterSerializer):
 
 class SubmoduleSerializer(BaseMasterSerializer):
     scope_field = "module"
+    module = serializers.SlugRelatedField(
+        slug_field="unique_id", write_only=True,
+        queryset=ModuleMaster.objects.filter(is_deleted=False),
+    )
     module_id = serializers.UUIDField(source="module.unique_id", read_only=True)
     module_name = serializers.CharField(source="module.name", read_only=True)
     project_name = serializers.CharField(source="module.project.name", read_only=True)

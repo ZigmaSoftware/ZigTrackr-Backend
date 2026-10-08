@@ -51,7 +51,7 @@ def set_track_cookie(response, ticket):
     )
     response.set_cookie(
         COOKIE_NAME, value, max_age=TOKEN_MAX_AGE, path=COOKIE_PATH,
-        httponly=True, secure=not settings.DEBUG, samesite="Lax",
+        httponly=True, secure=settings.AUTH_COOKIE_SECURE, samesite="Lax",
     )
 
 

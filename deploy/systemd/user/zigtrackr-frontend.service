@@ -1,0 +1,15 @@
+[Unit]
+Description=ZigTrackr frontend and API reverse proxy
+After=network.target zigtrackr-backend.service
+Wants=zigtrackr-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/Bug-Tracker/ZigTrackr-Frontend
+ExecStartPre=/usr/sbin/nginx -t -c /home/admin/Bug-Tracker/ZigTrackr-Backend/deploy/nginx/zigtrackr-lan.conf
+ExecStart=/usr/sbin/nginx -g "daemon off;" -c /home/admin/Bug-Tracker/ZigTrackr-Backend/deploy/nginx/zigtrackr-lan.conf
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

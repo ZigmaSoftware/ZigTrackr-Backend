@@ -274,6 +274,8 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         if to_status == TicketStatus.CLOSED and not has_permission(request.user, "tickets.ticket.verify_close"):
             raise PermissionDenied("Only a tester or lead may close a verified ticket.")
         current = ticket.bug.status if ticket.bug_id else ticket.status
+        if to_status == TicketStatus.ASSIGNED and not has_permission(request.user, "tickets.ticket.verify_close"):
+            raise PermissionDenied("Only a tester or lead may return a ticket to development.")
         if (current == TicketStatus.REOPENED and to_status == TicketStatus.IN_PROGRESS
                 and not has_permission(request.user, "tickets.ticket.verify_close")):
             raise PermissionDenied("A tester must review a reopened ticket before development resumes.")

@@ -54,6 +54,7 @@ def build_ticket_timeline(ticket, *, public=False):
             represented_statuses = {
                 "TICKET_ASSIGNED": "ASSIGNED",
                 "TICKET_REASSIGNED": "ASSIGNED",
+                "TICKET_RETURNED_TO_DEVELOPER": "ASSIGNED",
                 "WORK_STARTED": "IN_PROGRESS",
                 "RETURNED_TO_DEVELOPER": "IN_PROGRESS",
                 "TICKET_PENDING": "PENDING",

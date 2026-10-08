@@ -99,8 +99,8 @@ WORK_TRANSITIONS = {
     TicketStatus.IN_PROGRESS: (TicketStatus.PENDING, TicketStatus.ON_HOLD, TicketStatus.TESTING),
     TicketStatus.PENDING: (TicketStatus.IN_PROGRESS, TicketStatus.TESTING),
     TicketStatus.ON_HOLD: (TicketStatus.IN_PROGRESS, TicketStatus.TESTING),
-    TicketStatus.TESTING: (TicketStatus.CLOSED, TicketStatus.IN_PROGRESS),
-    TicketStatus.REOPENED: (TicketStatus.IN_PROGRESS, TicketStatus.CLOSED),
+    TicketStatus.TESTING: (TicketStatus.CLOSED, TicketStatus.IN_PROGRESS, TicketStatus.ASSIGNED),
+    TicketStatus.REOPENED: (TicketStatus.ASSIGNED, TicketStatus.CLOSED),
 }
 
 # Access requests move through approval before anything is implemented. The

@@ -1,0 +1,14 @@
+[Unit]
+Description=ZigTrackr API and WebSocket server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/Bug-Tracker/ZigTrackr-Backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.lan
+ExecStart=/home/admin/Bug-Tracker/ZigTrackr-Backend/.venv/bin/daphne -b 0.0.0.0 -p 3299 config.asgi:application
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

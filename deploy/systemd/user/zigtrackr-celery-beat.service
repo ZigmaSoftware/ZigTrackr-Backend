@@ -1,0 +1,15 @@
+[Unit]
+Description=ZigTrackr Celery scheduler
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/Bug-Tracker/ZigTrackr-Backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.lan
+ExecStartPre=/usr/bin/mkdir -p /home/admin/.local/state/zigtrackr
+ExecStart=/home/admin/Bug-Tracker/ZigTrackr-Backend/.venv/bin/celery -A config.celery.app beat --loglevel=INFO --schedule=/home/admin/.local/state/zigtrackr/celerybeat-schedule
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

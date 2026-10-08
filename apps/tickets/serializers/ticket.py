@@ -178,7 +178,11 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
         if (obj.owner_id == user.pk or has_permission(user, "tickets.ticket.mutate_all")
                 or has_permission(user, "tickets.ticket.classify")):
             targets = WORK_TRANSITIONS.get(effective_status(obj), ())
-            actions.extend(target for target in targets if target != TicketStatus.CLOSED)
+            actions.extend(
+                target for target in targets
+                if target != TicketStatus.CLOSED
+                and (target != TicketStatus.ASSIGNED or has_permission(user, "tickets.ticket.verify_close"))
+            )
         return actions
 
     def get_chat_state(self, obj):
@@ -285,7 +289,7 @@ class WorkTransitionSerializer(serializers.Serializer):
     """The shared work flow: start, hold, rectify, close."""
 
     to_status = serializers.ChoiceField(choices=[
-        TicketStatus.IN_PROGRESS, TicketStatus.ON_HOLD,
+        TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.ON_HOLD,
         TicketStatus.PENDING, TicketStatus.TESTING, TicketStatus.CLOSED,
     ])
     remarks = serializers.CharField(required=False, allow_blank=True, default="")

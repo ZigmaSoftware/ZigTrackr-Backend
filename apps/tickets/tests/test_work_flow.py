@@ -113,6 +113,81 @@ class WorkTransitionApiTests(TestCase):
         ticket.refresh_from_db()
         self.assertEqual(ticket.status, TicketStatus.IN_PROGRESS)
 
+    def test_returned_service_ticket_waits_for_developer_start(self):
+        ticket = self.ticket()
+        self.assertEqual(self.move(self.developer, ticket, "IN_PROGRESS").status_code, 200)
+        self.assertEqual(self.move(self.developer, ticket, "TESTING").status_code, 200)
+        started_events = ticket.activities.filter(event_type="WORK_STARTED").count()
+
+        response = self.move(self.tester, ticket, "ASSIGNED", "Another fix is required")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["data"]["current_work_started_at"], None)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatus.ASSIGNED)
+        self.assertEqual(ticket.owner, self.developer)
+        self.assertEqual(ticket.activities.filter(event_type="WORK_STARTED").count(), started_events)
+        self.assertTrue(ticket.activities.filter(event_type="TICKET_RETURNED_TO_DEVELOPER").exists())
+
+        response = self.move(self.developer, ticket, "IN_PROGRESS")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNotNone(response.json()["data"]["current_work_started_at"])
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatus.IN_PROGRESS)
+
+    def test_returned_bug_waits_for_developer_start(self):
+        project, module, priority, severity = make_masters()
+        bug = make_bug(
+            bug_no="BUG-2610-9016", reporter=self.lead, owner=self.developer,
+            project=project, module=module, priority=priority, severity=severity,
+            status=BugStatus.TESTING, root_cause="Missing check", resolution="Added check",
+        )
+        ticket = make_ticket(
+            ticket_type=TicketType.BUG, needs_review=False, status=TicketStatus.TESTING,
+            owner=self.developer, bug=bug, ticket_no="TKT-2610-9016",
+        )
+        response = self.move(self.tester, ticket, "ASSIGNED", "Retest found another issue")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNone(response.json()["data"]["current_work_started_at"])
+        ticket.refresh_from_db()
+        bug.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatus.ASSIGNED)
+        self.assertEqual(bug.status, BugStatus.ASSIGNED)
+        self.assertEqual(ticket.owner, self.developer)
+        self.assertFalse(ticket.activities.filter(event_type="BUG_STATUS_IN_PROGRESS").exists())
+
+        response = self.move(self.developer, ticket, "IN_PROGRESS")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIsNotNone(response.json()["data"]["current_work_started_at"])
+        bug.refresh_from_db()
+        self.assertEqual(bug.status, BugStatus.IN_PROGRESS)
+
+    def test_return_does_not_start_a_second_active_ticket(self):
+        active = self.ticket()
+        self.assertEqual(self.move(self.developer, active, "IN_PROGRESS").status_code, 200)
+        returned = make_ticket(
+            ticket_type=TicketType.SERVICE_REQUEST, needs_review=False,
+            status=TicketStatus.TESTING, owner=self.developer,
+        )
+        response = self.move(self.tester, returned, "ASSIGNED", "Another fix needed")
+        self.assertEqual(response.status_code, 200, response.content)
+        returned.refresh_from_db()
+        self.assertEqual(returned.status, TicketStatus.ASSIGNED)
+        self.assertEqual(self.move(self.developer, returned, "IN_PROGRESS").status_code, 400)
+        self.assertEqual(self.move(self.developer, active, "PENDING").status_code, 200)
+        self.assertEqual(self.move(self.developer, returned, "IN_PROGRESS").status_code, 200)
+
+    def test_return_requires_verifier_and_remark(self):
+        ticket = make_ticket(
+            ticket_type=TicketType.SERVICE_REQUEST, needs_review=False,
+            status=TicketStatus.TESTING, owner=self.developer,
+        )
+        self.assertEqual(self.move(self.developer, ticket, "ASSIGNED", "Return").status_code, 403)
+        response = self.move(self.tester, ticket, "ASSIGNED", " ")
+        self.assertEqual(response.status_code, 400, response.content)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatus.TESTING)
+        self.assertEqual(self.move(self.tester, ticket, "ASSIGNED", "Fix failed").status_code, 200)
+
     def test_developer_can_only_have_one_active_ticket(self):
         first = self.ticket()
         second = self.ticket()
@@ -334,7 +409,10 @@ class WorkTransitionApiTests(TestCase):
         response = self.login(self.tester).get("/api/v1/tickets/?verification_queue=true")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertIn(ticket.ticket_no, [row["ticket_no"] for row in response.json()["data"]["results"]])
-        self.assertEqual(self.move(self.tester, ticket, "IN_PROGRESS", "Issue persists").status_code, 200)
+        self.assertEqual(self.move(self.tester, ticket, "ASSIGNED", "Issue persists").status_code, 200)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, TicketStatus.ASSIGNED)
+        self.assertEqual(self.move(self.developer, ticket, "IN_PROGRESS").status_code, 200)
         ticket.refresh_from_db()
         self.assertEqual(ticket.status, TicketStatus.IN_PROGRESS)
 
