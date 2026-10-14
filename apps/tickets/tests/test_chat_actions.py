@@ -3,7 +3,7 @@
 from django.test import TestCase
 from django.conf import settings
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.tokens import AccessToken
+from apps.authentication.services.token_service import issue_tokens
 
 from apps.bugs.tests.factories import make_user
 from apps.tickets.constants import TicketStatus, TicketType
@@ -110,7 +110,8 @@ class StaffChatActionTests(TestCase):
             sender_display_name=self.owner.display_name, message_text="Original",
         )
         client = APIClient(enforce_csrf_checks=True)
-        client.cookies[settings.AUTH_COOKIE_NAME] = str(AccessToken.for_user(self.owner))
+        _, access = issue_tokens(self.owner)
+        client.cookies[settings.AUTH_COOKIE_NAME] = str(access)
         client.cookies["csrftoken"] = "a" * 32
         action = f"{self.base}{row.unique_id}/"
         headers = {"HTTP_ORIGIN": "http://localhost:5174", "HTTP_X_CSRFTOKEN": "a" * 32}

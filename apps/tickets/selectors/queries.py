@@ -3,6 +3,7 @@
 from django.db.models import (
     BooleanField,
     Case,
+    Count,
     DateTimeField,
     F,
     IntegerField,
@@ -22,6 +23,7 @@ from apps.tickets.constants import TERMINAL_TICKET_STATUSES, TicketStatus
 from apps.tickets.models import SupportTicket, TicketActivity, TicketUpdate
 from common.db.functions import DateDiff
 from common.utils.dates import local_today
+from apps.tickets.selectors.attachments import valid_email_attachments
 
 
 TICKET_LIST_RELATIONS = (
@@ -44,6 +46,11 @@ TICKET_LIST_RELATIONS = (
 def with_ticket_computed(queryset, today=None):
     """Annotate dynamic list fields without storing them."""
     today = today or local_today()
+    attachment_counts = (
+        valid_email_attachments().filter(mail__linked_ticket_id=OuterRef("pk"))
+        .order_by().values("mail__linked_ticket_id")
+        .annotate(total=Count("id")).values("total")[:1]
+    )
     latest_ticket_update = (
         TicketUpdate.objects
         .filter(ticket=OuterRef("pk"))
@@ -76,6 +83,9 @@ def with_ticket_computed(queryset, today=None):
         & ~Q(bug__status__in=BUG_TERMINAL_STATUSES)
     )
     return queryset.annotate(
+        email_attachment_count=Coalesce(
+            Subquery(attachment_counts, output_field=IntegerField()), Value(0),
+        ),
         original_mail_received_at=Subquery(original_mail_received_at),
         current_work_started_at=Case(
             When(

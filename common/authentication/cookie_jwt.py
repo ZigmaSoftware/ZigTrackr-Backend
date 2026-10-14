@@ -13,6 +13,7 @@ from django.conf import settings
 from django.middleware.csrf import CsrfViewMiddleware
 from rest_framework import exceptions
 from rest_framework_simplejwt.authentication import JWTAuthentication
+from common.authentication.session import validate_session
 
 SAFE_METHODS = ("GET", "HEAD", "OPTIONS", "TRACE")
 
@@ -42,6 +43,8 @@ class CookieJWTAuthentication(JWTAuthentication):
 
         if not user.is_active or getattr(user, "is_deleted", False):
             raise exceptions.AuthenticationFailed("User account is inactive.")
+
+        validate_session(validated_token, user)
 
         if from_cookie:
             self._enforce_csrf(request)

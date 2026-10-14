@@ -27,6 +27,7 @@ from common.permissions.scoping import can_mutate_ticket, can_view_ticket
 from common.responses import created, ok
 from common.services.audit import record_audit
 from common.validators.files import INLINE_SAFE_TYPES
+from apps.tickets.selectors.attachments import valid_email_attachments
 
 
 class TicketAttachmentView(APIView):
@@ -62,8 +63,8 @@ class TicketAttachmentView(APIView):
                 {**row, "source": "MANUAL", "uploaded_by_name": row["uploaded_by"]["name"]}
                 for row in TicketAttachmentSerializer(rows, many=True).data
             ]
-        mail_rows = [] if source == "MANUAL" else MailAttachment.objects.filter(
-            mail__linked_ticket=ticket, is_rejected=False,
+        mail_rows = [] if source == "MANUAL" else valid_email_attachments().filter(
+            mail__linked_ticket=ticket,
         ).select_related("mail").order_by("mail__received_at", "id")
         incoming = [{
             "id": str(row.unique_id),

@@ -7,6 +7,7 @@ from apps.authentication.views import (
     MeView,
     PasswordChangeView,
     RefreshView,
+    SessionActivityView,
 )
 
 urlpatterns = [
@@ -14,6 +15,7 @@ urlpatterns = [
     path("logout/", LogoutView.as_view(), name="auth-logout"),
     path("refresh/", RefreshView.as_view(), name="auth-refresh"),
     path("me/", MeView.as_view(), name="auth-me"),
+    path("activity/", SessionActivityView.as_view(), name="auth-activity"),
     path("csrf/", CsrfView.as_view(), name="auth-csrf"),
     path("password/change/", PasswordChangeView.as_view(), name="auth-password-change"),
 ]

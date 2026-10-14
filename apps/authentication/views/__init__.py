@@ -5,8 +5,9 @@ from .auth_views import (
     MeView,
     PasswordChangeView,
     RefreshView,
+    SessionActivityView,
 )
 
 __all__ = [
-    "CsrfView", "LoginView", "LogoutView", "MeView", "PasswordChangeView", "RefreshView",
+    "CsrfView", "LoginView", "LogoutView", "MeView", "PasswordChangeView", "RefreshView", "SessionActivityView",
 ]

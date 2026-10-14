@@ -1,8 +1,13 @@
 """Role and state checks for assigned service and access requests."""
 
 from datetime import timedelta
+from io import BytesIO
+from unittest.mock import patch
 
+from django.core import mail
+from django.core.cache import cache
 from django.test import Client, TestCase
+from django.test import override_settings
 from django.utils import timezone
 
 from apps.accounts.models import UserRole
@@ -10,12 +15,13 @@ from apps.audit.models import AuditAction, AuditLog
 from apps.bugs.tests.factories import make_team, make_user
 from apps.bugs.tests.test_api import seed_rbac
 from apps.bugs.tests.test_api import PASSWORD
-from apps.mail_intake.models import MailIntake
+from apps.mail_intake.models import MailAttachment, MailIntake
 from apps.tickets.constants import TicketStatus, TicketType
 from apps.tickets.models import OutboundMail
 from apps.tickets.tests.factories import make_ticket
 
 
+@override_settings(TICKET_ACK_ENABLED=True, EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class UnassignedTicketQueueTests(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -26,6 +32,9 @@ class UnassignedTicketQueueTests(TestCase):
             user.set_password(PASSWORD)
             user.save()
             UserRole.objects.create(user=user, role=roles[role])
+
+    def setUp(self):
+        cache.clear()
 
     def login(self, user):
         client = Client()
@@ -68,16 +77,147 @@ class UnassignedTicketQueueTests(TestCase):
         client = self.login(self.admin)
         queue_rows = client.get("/api/v1/tickets/", {"unassigned": "true"}).json()["data"]["results"]
         self.assertTrue(next(row for row in queue_rows if row["id"] == str(ticket.unique_id))["can_delete"])
-        response = client.delete(f"/api/v1/tickets/{ticket.unique_id}/")
+        response = client.delete(f"/api/v1/tickets/{ticket.unique_id}/",
+                                 data={"disposition": "NOT_A_TICKET"}, content_type="application/json")
         self.assertEqual(response.status_code, 200, response.content)
         ticket.refresh_from_db()
         mail.refresh_from_db()
         self.assertTrue(ticket.is_deleted)
         self.assertEqual(mail.linked_ticket_id, ticket.pk)
+        self.assertFalse(response.json()["data"]["notification_queued"])
+        self.assertFalse(OutboundMail.objects.filter(ticket=ticket, kind="DELETED").exists())
         self.assertTrue(AuditLog.objects.filter(
             entity_unique_id=ticket.unique_id, action=AuditAction.TICKET_DELETED,
         ).exists())
         self.assertEqual(client.get(f"/api/v1/tickets/{ticket.unique_id}/").status_code, 404)
+
+    def test_delete_requires_explicit_disposition_and_nonblank_reason(self):
+        ticket = make_ticket()
+        client = self.login(self.admin)
+        for payload in ({}, {"disposition": "OTHER"}, {"disposition": "DELETE"},
+                        {"disposition": "DELETE", "reason": "   "},
+                        {"disposition": "DELETE", "reason": "x" * 2001}):
+            with self.subTest(payload=payload):
+                response = client.delete(f"/api/v1/tickets/{ticket.unique_id}/",
+                                         data=payload, content_type="application/json")
+                self.assertEqual(response.status_code, 400, response.content)
+        ticket.refresh_from_db()
+        self.assertFalse(ticket.is_deleted)
+        self.assertFalse(OutboundMail.objects.filter(ticket=ticket).exists())
+
+    def test_reason_delete_is_durable_and_delivers_after_soft_deletion(self):
+        from apps.tickets.tasks import deliver_outbound_mail
+
+        ticket = make_ticket(title="Duplicate request", ack_message_id="ack@example.com")
+        reason = "The same request is already tracked under another reference."
+        response = self.login(self.admin).delete(f"/api/v1/tickets/{ticket.unique_id}/",
+            data={"disposition": "DELETE", "reason": f"  {reason}  "}, content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["data"]["notification_queued"])
+        ticket.refresh_from_db()
+        self.assertTrue(ticket.is_deleted)
+        job = OutboundMail.objects.get(ticket=ticket, kind="DELETED")
+        self.assertEqual(job.recipient, ticket.reported_by_email)
+        self.assertEqual(job.status, OutboundMail.Status.PENDING)
+        self.assertIn(ticket.ref_no, job.subject)
+        self.assertIn("Request deleted", job.subject)
+        self.assertIn(reason, job.body)
+        self.assertEqual(job.in_reply_to, "ack@example.com")
+        audit = AuditLog.objects.get(entity_unique_id=ticket.unique_id, action=AuditAction.TICKET_DELETED)
+        self.assertEqual(audit.remarks, reason)
+        self.assertEqual(audit.metadata["disposition"], "DELETE")
+        self.assertEqual(mail.outbox, [])
+        self.assertEqual(deliver_outbound_mail(job.pk), "SENT")
+        self.assertEqual(deliver_outbound_mail(job.pk), "SENT")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(reason, mail.outbox[0].body)
+        self.assertEqual(mail.outbox[0].extra_headers["In-Reply-To"], "<ack@example.com>")
+        repeated = self.login(self.admin).delete(f"/api/v1/tickets/{ticket.unique_id}/",
+            data={"disposition": "DELETE", "reason": reason}, content_type="application/json")
+        self.assertEqual(repeated.status_code, 404)
+        self.assertEqual(OutboundMail.objects.filter(ticket=ticket, kind="DELETED").count(), 1)
+
+    def test_redis_failure_does_not_undo_reason_deletion(self):
+        ticket = make_ticket()
+        client = self.login(self.admin)
+        with patch("apps.tickets.tasks.deliver_outbound_mail.apply_async",
+                   side_effect=ConnectionError("Broker unavailable")):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = client.delete(f"/api/v1/tickets/{ticket.unique_id}/",
+                    data={"disposition": "DELETE", "reason": "Duplicate"}, content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        ticket.refresh_from_db()
+        self.assertTrue(ticket.is_deleted)
+        self.assertEqual(OutboundMail.objects.get(ticket=ticket).status, OutboundMail.Status.PENDING)
+
+    def test_audit_failure_rolls_back_deletion_and_notice(self):
+        ticket = make_ticket()
+        client = self.login(self.admin)
+        with patch("apps.tickets.views.ticket_views.record_audit", side_effect=RuntimeError("Audit unavailable")):
+            with self.captureOnCommitCallbacks(execute=True) as callbacks:
+                response = client.delete(f"/api/v1/tickets/{ticket.unique_id}/",
+                    data={"disposition": "DELETE", "reason": "Duplicate"}, content_type="application/json")
+        self.assertEqual(response.status_code, 500)
+        ticket.refresh_from_db()
+        self.assertFalse(ticket.is_deleted)
+        self.assertFalse(OutboundMail.objects.filter(ticket=ticket).exists())
+        self.assertEqual(callbacks, [])
+
+    def test_original_sender_and_message_id_are_used_when_ticket_address_is_empty(self):
+        ticket = make_ticket(reported_by_email="", title="Request\r\nwith newlines")
+        MailIntake.objects.create(dedupe_key="queue-delete-fallback", from_email="original@example.com",
+            message_id="original-message@example.com", received_at=timezone.now(), linked_ticket=ticket)
+        response = self.login(self.admin).delete(f"/api/v1/tickets/{ticket.unique_id}/",
+            data={"disposition": "DELETE", "reason": "Duplicate"}, content_type="application/json")
+        self.assertEqual(response.status_code, 200, response.content)
+        job = OutboundMail.objects.get(ticket=ticket)
+        self.assertEqual(job.recipient, "original@example.com")
+        self.assertEqual(job.in_reply_to, "original-message@example.com")
+        self.assertNotIn("\r", job.subject)
+        self.assertNotIn("\n", job.subject)
+
+    def test_missing_and_no_reply_addresses_do_not_receive_deletion_mail(self):
+        client = self.login(self.admin)
+        for address in ("", "noreply@example.com"):
+            ticket = make_ticket(reported_by_email=address)
+            response = client.delete(f"/api/v1/tickets/{ticket.unique_id}/",
+                data={"disposition": "DELETE", "reason": "Unrelated request"}, content_type="application/json")
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertFalse(response.json()["data"]["notification_queued"])
+            self.assertFalse(OutboundMail.objects.filter(ticket=ticket).exists())
+
+    def test_attachment_count_and_mail_view_include_only_valid_linked_files(self):
+        from apps.tickets.models import TicketAttachment
+        from apps.tickets.selectors import base_ticket_queryset
+
+        ticket = make_ticket()
+        empty_ticket = make_ticket()
+        for index, (linked, reply, rejected, path) in enumerate((
+            (ticket, False, False, "private/original.png"),
+            (ticket, True, False, "private/reply.pdf"),
+            (ticket, True, True, "private/rejected.exe"),
+            (ticket, False, False, ""),
+            (empty_ticket, False, False, "private/other.txt"),
+        )):
+            incoming = MailIntake.objects.create(dedupe_key=f"queue-count-{index}",
+                from_email="sender@example.com", received_at=timezone.now(), linked_ticket=linked,
+                is_thread_reply=reply)
+            MailAttachment.objects.create(mail=incoming, file_name=f"file{index}.txt",
+                file_type="text/plain", file_size=100, file_path=path, is_rejected=rejected)
+        TicketAttachment.objects.create(ticket=ticket, uploaded_by=self.admin,
+            file_name="internal.txt", file_type="text/plain", file_size=10, file_path="private/internal.txt")
+        client = self.login(self.admin)
+        rows = client.get("/api/v1/tickets/", {"unassigned": "true"}).json()["data"]["results"]
+        row = next(row for row in rows if row["id"] == str(ticket.unique_id))
+        self.assertEqual(row["email_attachment_count"], 2)
+        attachment_rows = client.get(f"/api/v1/tickets/{ticket.unique_id}/attachments/?source=MAIL").json()["data"]
+        self.assertEqual([row["file_name"] for row in attachment_rows], ["file0.txt", "file1.txt"])
+        self.assertEqual([row["reason"] for row in attachment_rows], ["Original email", "Email reply"])
+        # Counting a page is one SQL query, not one attachment query per ticket.
+        with self.assertNumQueries(1):
+            counts = dict(base_ticket_queryset().values_list("pk", "email_attachment_count"))
+        self.assertEqual(counts[ticket.pk], 2)
+        self.assertEqual(base_ticket_queryset().get(pk=make_ticket().pk).email_attachment_count, 0)
 
     def test_non_admin_cannot_delete_and_assigned_ticket_is_protected(self):
         unassigned = make_ticket()
@@ -114,6 +254,7 @@ class AssignedRequestApiTests(TestCase):
         UserRole.objects.create(user=cls.developer, role=roles["DEVELOPER"])
 
     def setUp(self):
+        cache.clear()
         self.client = Client()
 
     def post_as(self, user, ticket, action, payload=None):
@@ -189,6 +330,7 @@ class TicketAttachmentApiTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         roles = seed_rbac()
+        cls.roles = roles
         team = make_team("Attachment team")
         cls.developer = make_user("attach_developer", team=team)
         cls.lead = make_user("attach_lead", team=team)
@@ -359,6 +501,34 @@ class TicketAttachmentApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400, response.content)
 
+    def test_mail_download_and_listing_require_authentication_and_ticket_visibility(self):
+        ticket = self.ticket()
+        incoming = MailIntake.objects.create(dedupe_key="mail-download-scope", from_email="sender@example.com",
+            received_at=timezone.now(), linked_ticket=ticket)
+        attachment = MailAttachment.objects.create(mail=incoming, file_name="request.txt",
+            file_type="text/plain", file_size=10, file_path="private/request.txt")
+        url = f"/api/v1/tickets/mail-attachments/{attachment.unique_id}/download/"
+        listing = f"/api/v1/tickets/{ticket.unique_id}/attachments/?source=MAIL"
+        self.assertEqual(Client().get(url).status_code, 401)
+        self.assertEqual(Client().get(listing).status_code, 401)
+        outsider = make_user("attachment_outsider")
+        outsider.set_password(PASSWORD)
+        outsider.save()
+        UserRole.objects.create(user=outsider, role=self.roles["DEVELOPER"])
+        outsider_client = self.login(outsider)
+        self.assertEqual(outsider_client.get(url).status_code, 404)
+        self.assertEqual(outsider_client.get(listing).status_code, 404)
+        client = self.login(self.developer)
+        with patch("apps.tickets.views.attachment_views.default_storage.exists", return_value=True):
+            with patch("apps.tickets.views.attachment_views.default_storage.open", return_value=BytesIO(b"safe text")):
+                response = client.get(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(b"".join(response.streaming_content), b"safe text")
+                self.assertEqual(response["X-Content-Type-Options"], "nosniff")
+        ticket.soft_delete()
+        self.assertEqual(client.get(url).status_code, 404)
+        self.assertEqual(client.get(listing).status_code, 404)
+
 
 class TicketTimelineApiTests(TestCase):
     """The timeline folds in the linked bug's history, which is where a BUG
@@ -375,6 +545,9 @@ class TicketTimelineApiTests(TestCase):
             user.save()
         UserRole.objects.create(user=cls.lead, role=roles["TEAM_LEAD"])
         UserRole.objects.create(user=cls.developer, role=roles["DEVELOPER"])
+
+    def setUp(self):
+        cache.clear()
 
     def login(self, user):
         client = Client()

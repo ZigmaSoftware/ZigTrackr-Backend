@@ -14,6 +14,7 @@ from apps.tickets.services.chat_service import send_message
 from apps.tickets.services.public_track_service import verified_ticket
 from common.exceptions.domain import WorkflowValidationError
 from common.permissions.scoping import can_view_ticket
+from common.authentication.session import validate_session
 
 
 class TicketChatConsumer(AsyncJsonWebsocketConsumer):
@@ -48,12 +49,21 @@ class TicketChatConsumer(AsyncJsonWebsocketConsumer):
             await self.send_json({"type": "error", "message": error})
 
     async def ticket_message(self, event):
+        if await self._authorize() != self.ticket_id:
+            await self.close(code=4403)
+            return
         await self.send_json({"type": "message", "message": event["message"]})
 
     async def ticket_changed(self, event):
+        if await self._authorize() != self.ticket_id:
+            await self.close(code=4403)
+            return
         await self.send_json({"type": "message_changed", "message": event["message"]})
 
     async def ticket_receipts(self, event):
+        if await self._authorize() != self.ticket_id:
+            await self.close(code=4403)
+            return
         await self.send_json({"type": "receipts_changed"})
 
     def _cookies(self):
@@ -74,7 +84,9 @@ class TicketChatConsumer(AsyncJsonWebsocketConsumer):
             return None
         try:
             auth = JWTAuthentication()
-            user = auth.get_user(auth.get_validated_token(token))
+            validated_token = auth.get_validated_token(token)
+            user = auth.get_user(validated_token)
+            validate_session(validated_token, user)
             if not user.is_active or getattr(user, "is_deleted", False):
                 return None
             ticket = SupportTicket.objects.select_related("bug", "owner").get(
@@ -96,9 +108,11 @@ class TicketChatConsumer(AsyncJsonWebsocketConsumer):
                 )
             else:
                 auth = JWTAuthentication()
-                user = auth.get_user(auth.get_validated_token(
+                validated_token = auth.get_validated_token(
                     self.cookies[settings.AUTH_COOKIE_NAME],
-                ))
+                )
+                user = auth.get_user(validated_token)
+                validate_session(validated_token, user)
                 send_message(ticket=ticket, text=value, user=user)
         except WorkflowValidationError as exc:
             return next(iter(exc.errors.values()))[0]

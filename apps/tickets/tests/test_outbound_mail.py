@@ -5,11 +5,12 @@ from unittest.mock import patch
 from django.core import mail
 from django.db import transaction
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from apps.tickets.models import OutboundMail
 from apps.tickets.services.ack_service import should_acknowledge
 from apps.tickets.services.outbound_mail import (
-    queue_acknowledgement, queue_assigned_notice, queue_closed_notice,
+    queue_acknowledgement, queue_assigned_notice, queue_closed_notice, queue_deleted_notice,
 )
 from apps.tickets.tasks import deliver_outbound_mail, recover_outbound_mail
 from apps.tickets.tests.factories import make_ticket
@@ -17,6 +18,37 @@ from apps.tickets.tests.factories import make_ticket
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class OutboundMailTests(TestCase):
+    def test_deletion_notice_retries_after_soft_delete_and_recovery(self):
+        ticket = make_ticket()
+        with transaction.atomic():
+            job = queue_deleted_notice(ticket=ticket, reason="Duplicate request")
+            ticket.soft_delete()
+        with patch("django.core.mail.EmailMultiAlternatives.send", side_effect=ConnectionError("SMTP offline")):
+            self.assertEqual(deliver_outbound_mail(job.pk), "RETRY")
+        job.refresh_from_db()
+        self.assertEqual(job.status, OutboundMail.Status.RETRY)
+        job.next_attempt_at = timezone.now()
+        job.save(update_fields=["next_attempt_at"])
+        with patch("apps.tickets.tasks.deliver_outbound_mail.delay") as publish:
+            recover_outbound_mail()
+        publish.assert_called_once_with(job.pk)
+        self.assertEqual(deliver_outbound_mail(job.pk), "SENT")
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Duplicate request", mail.outbox[0].body)
+
+    def test_deletion_notice_is_deduplicated_per_ticket(self):
+        ticket = make_ticket()
+        first = queue_deleted_notice(ticket=ticket, reason="Duplicate request")
+        second = queue_deleted_notice(ticket=ticket, reason="Duplicate request")
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(OutboundMail.objects.filter(ticket=ticket, kind="DELETED").count(), 1)
+
+    @override_settings(TICKET_ACK_ENABLED=False)
+    def test_disabled_mail_does_not_queue_deletion_notice(self):
+        ticket = make_ticket()
+        self.assertIsNone(queue_deleted_notice(ticket=ticket, reason="Duplicate request"))
+        self.assertFalse(OutboundMail.objects.filter(ticket=ticket).exists())
+
     def test_no_reply_provider_alias_never_receives_automated_mail(self):
         self.assertFalse(should_acknowledge("google-noreply@google.com"))
         self.assertTrue(should_acknowledge("person@google.com"))

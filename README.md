@@ -25,8 +25,67 @@ Run Redis on `127.0.0.1:6379` and start these in separate terminals:
 
 Beat schedules IMAP polling and sweeps saved outbound mail jobs. The outbound
 worker sends the existing incoming-mail acknowledgement, assignment notice and
-closure notice. Ticket requests do not wait for SMTP; failed notices remain in
+closure notice, plus reason-based unassigned deletion notices. Ticket requests do not wait for SMTP; failed notices remain in
 MariaDB for retry. Login usernames and emails must match saved case exactly.
+
+## Unassigned request actions and files
+
+The row menu has two audited soft-deletion actions, using existing delete
+permissions and unassigned-state checks. **Not a Ticket** requires confirmation
+in the UI and does not queue a deletion notice. **Delete** requires a nonblank
+reason (maximum 2,000 characters) and queues it to the sender in the same database
+transaction as deletion. Existing mail records and files remain retained.
+
+`DELETE /api/v1/tickets/{id}/` requires an explicit JSON body:
+
+```json
+{"disposition": "NOT_A_TICKET"}
+```
+
+or:
+
+```json
+{"disposition": "DELETE", "reason": "This request is already tracked under another reference."}
+```
+
+The result includes `notification_queued`, not delivery confirmation. Mail uses
+the existing `mail-outbound` worker and Beat recovery, stable Message-IDs and
+reply threading. Missing, system/no-reply addresses or `TICKET_ACK_ENABLED=false`
+prevent notification; the audit still records the deletion reason.
+
+Ticket lists include `email_attachment_count`, computed without per-row queries.
+`GET /tickets/{id}/attachments/?source=MAIL` lists original and linked reply files,
+excluding rejected files, empty storage paths and internal uploads. Previews and
+downloads use the existing authenticated, visibility-checked endpoint; deleted
+tickets are not downloadable. No new migration is required for these changes.
+
+## Login sessions
+
+Manual logout clears the UI and cached account data immediately; the protected
+server logout runs with a five-second browser timeout. Logout works even when
+the access cookie has expired, is idempotent, and revokes both access and
+refresh credentials through a server-side session record. All auth responses
+are `Cache-Control: no-store`; refresh and logout require CSRF protection.
+
+The default policy is **30 minutes idle**, a **one-minute warning**, and an
+**eight-hour absolute limit**. Set `AUTH_SESSION_IDLE_MINUTES=30`,
+`AUTH_SESSION_MAX_HOURS=8`, and `JWT_ACCESS_MINUTES=5` in `.env`. Tokens remain
+HttpOnly; even if `JWT_REFRESH_DAYS` is seven, issued refresh tokens/cookies are
+capped at the original session deadline. Rotation never resets that deadline.
+
+`POST /api/v1/auth/activity/` records user interaction. The frontend sends it
+at most once a minute while interacting (or explicitly on Stay signed in).
+Polling, `/auth/me/`, refresh, and chat traffic do not extend idle time.
+Expiry is checked by the backend on every authenticated request, refresh and
+staff chat authorization; password changes also invalidate old access tokens.
+
+State is stored in Django's existing `django_session` table, not a per-process
+cache, so revocation works across API processes and restarts. No new migration
+or extra service is required if normal migrations have already been applied.
+Deploy backend and frontend together, restart the backend, and sign in again:
+old tokens without session claims are intentionally rejected. Run
+`.venv/bin/python manage.py clearsessions` and
+`.venv/bin/python manage.py flushexpiredtokens` daily to prune expired records.
 
 ## Dashboard summary
 

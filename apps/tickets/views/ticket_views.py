@@ -36,6 +36,8 @@ from apps.tickets.serializers import (
     TicketWorkflowSerializer,
     WorkTransitionSerializer,
 )
+from apps.tickets.serializers.ticket import DeleteTicketSerializer
+from apps.tickets.services.outbound_mail import queue_deleted_notice
 from apps.tickets.selectors import base_ticket_queryset
 from common.permissions.require import RequirePermission, has_permission
 from common.permissions.scoping import can_mutate_ticket, scope_bug_queryset, scope_ticket_queryset
@@ -174,22 +176,32 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         ticket = self._get_for_write(request)
         if ticket.owner_id is not None or ticket.bug_id is not None or ticket.ticket_no:
             raise ValidationError({"detail": ["Only unassigned tickets can be deleted."]})
+        serializer = DeleteTicketSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        disposition = serializer.validated_data["disposition"]
+        reason = serializer.validated_data.get("reason", "").strip()
+        job = None
         with transaction.atomic():
             # Recheck after locking: another worker may have assigned this
             # ticket between the detail read and the deletion request.
             ticket = SupportTicket.objects.select_for_update().get(pk=ticket.pk)
             if ticket.is_deleted or ticket.owner_id is not None or ticket.bug_id is not None or ticket.ticket_no:
                 raise ValidationError({"detail": ["Only unassigned tickets can be deleted."]})
+            if disposition == "DELETE":
+                job = queue_deleted_notice(ticket=ticket, reason=reason)
             ticket.soft_delete(deleted_by=request.user.unique_id)
             record_audit(
                 action=AuditAction.TICKET_DELETED,
                 entity=ticket,
                 actor=request.user,
                 old_value=ticket.reference,
-                remarks="Unassigned ticket removed from the review queue.",
+                remarks=reason if disposition == "DELETE" else "Marked as Not a Ticket and removed from the review queue.",
+                metadata={"disposition": disposition, "notification_queued": job is not None,
+                          "outbound_mail_id": job.pk if job else None},
                 request=request,
             )
-        return ok(None, message="Ticket deleted.")
+        return ok({"disposition": disposition, "notification_queued": job is not None},
+                  message="Ticket deleted. Deletion email queued." if job else "Ticket removed from the queue.")
 
     # ---- UPDATES ----
 

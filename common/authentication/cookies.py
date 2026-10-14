@@ -1,13 +1,14 @@
 """Auth cookie management."""
 
 from django.conf import settings
+import time
 
 
 def set_auth_cookies(response, access_token, refresh_token=None):
     response.set_cookie(
         key=settings.AUTH_COOKIE_NAME,
         value=str(access_token),
-        max_age=int(settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"].total_seconds()),
+        max_age=max(0, int(access_token["exp"] - time.time())),
         httponly=True,
         secure=settings.AUTH_COOKIE_SECURE,
         samesite=settings.AUTH_COOKIE_SAMESITE,
@@ -17,7 +18,7 @@ def set_auth_cookies(response, access_token, refresh_token=None):
         response.set_cookie(
             key=settings.REFRESH_COOKIE_NAME,
             value=str(refresh_token),
-            max_age=int(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds()),
+            max_age=max(0, int(refresh_token["exp"] - time.time())),
             httponly=True,
             secure=settings.AUTH_COOKIE_SECURE,
             samesite=settings.AUTH_COOKIE_SAMESITE,

@@ -69,6 +69,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
     mail_to_email = serializers.SerializerMethodField()
     can_reassign = serializers.SerializerMethodField()
     can_delete = serializers.SerializerMethodField()
+    email_attachment_count = serializers.IntegerField(read_only=True, default=0)
     reassign_block_reason = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
     chat_state = serializers.SerializerMethodField()
@@ -88,7 +89,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
             "expected_closure_date", "effective_expected_closure_date",
             "age_days", "is_overdue", "overdue_days", "latest_update_at", "current_work_started_at",
             "created_at", "can_reassign", "can_delete", "reassign_block_reason",
-            "allowed_actions", "chat_state",
+            "allowed_actions", "chat_state", "email_attachment_count",
         ]
         read_only_fields = fields
 
@@ -283,6 +284,16 @@ class TicketChatInboxSerializer(serializers.Serializer):
 class AddTicketUpdateSerializer(serializers.Serializer):
     update_text = serializers.CharField()
     remarks = serializers.CharField(required=False, allow_blank=True)
+
+
+class DeleteTicketSerializer(serializers.Serializer):
+    disposition = serializers.ChoiceField(choices=("NOT_A_TICKET", "DELETE"))
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+    def validate(self, data):
+        if data["disposition"] == "DELETE" and not data.get("reason", "").strip():
+            raise serializers.ValidationError({"reason": ["Enter the reason for deleting this request."]})
+        return data
 
 
 class WorkTransitionSerializer(serializers.Serializer):

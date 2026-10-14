@@ -4,6 +4,8 @@ from asgiref.sync import async_to_sync
 from channels.testing import WebsocketCommunicator
 from channels.db import database_sync_to_async
 from django.core import signing
+from django.conf import settings
+from django.contrib.sessions.backends.db import SessionStore
 from django.test import TransactionTestCase, override_settings
 
 from apps.bugs.tests.factories import make_user
@@ -13,6 +15,7 @@ from apps.tickets.services.chat_service import acknowledge_messages, change_mess
 from apps.tickets.services.public_track_service import COOKIE_NAME, TOKEN_SALT
 from apps.tickets.tests.factories import make_ticket
 from config.asgi import application
+from apps.authentication.services.token_service import issue_tokens
 
 TEST_LAYER = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 SOCKET_PATH = "/api/v1/tickets/public/track/ws/"
@@ -43,6 +46,7 @@ class PublicChatSocketTests(TransactionTestCase):
             await socket.disconnect()
 
         async_to_sync(scenario)()
+
 
     def test_requester_send_is_saved_and_broadcast(self):
         token = signing.dumps(
@@ -107,6 +111,51 @@ class PublicChatSocketTests(TransactionTestCase):
             )
             frame = await socket.receive_json_from(timeout=3)
             self.assertEqual(frame["type"], "receipts_changed")
+            await socket.disconnect()
+
+        async_to_sync(scenario)()
+
+
+@override_settings(CHANNEL_LAYERS=TEST_LAYER, ALLOWED_HOSTS=["localhost", "127.0.0.1"])
+class StaffSessionSocketTests(TransactionTestCase):
+    def setUp(self):
+        self.owner = make_user("session_socket_owner")
+        self.ticket = make_ticket(
+            owner=self.owner, ticket_type=TicketType.SERVICE_REQUEST,
+            needs_review=False, status=TicketStatus.IN_PROGRESS,
+        )
+        _, self.access = issue_tokens(self.owner)
+        self.path = f"/api/v1/tickets/{self.ticket.unique_id}/ws/"
+        self.headers = [
+            (b"origin", b"http://localhost:5173"),
+            (b"cookie", f"{settings.AUTH_COOKIE_NAME}={self.access}".encode()),
+        ]
+
+    def test_revoked_session_cannot_connect(self):
+        SessionStore(session_key=self.access["sid"]).delete()
+
+        async def scenario():
+            socket = WebsocketCommunicator(application, self.path, headers=self.headers)
+            connected, _ = await socket.connect()
+            self.assertFalse(connected)
+            await socket.disconnect()
+
+        async_to_sync(scenario)()
+
+    def test_revoked_open_socket_cannot_receive_messages(self):
+        from channels.layers import get_channel_layer
+
+        async def scenario():
+            socket = WebsocketCommunicator(application, self.path, headers=self.headers)
+            connected, _ = await socket.connect()
+            self.assertTrue(connected)
+            await database_sync_to_async(SessionStore(session_key=self.access["sid"]).delete)()
+            await get_channel_layer().group_send(
+                f"ticket_{self.ticket.pk}", {"type": "ticket.message", "message": {"message_text": "Private"}},
+            )
+            frame = await socket.receive_output(timeout=3)
+            self.assertEqual(frame["type"], "websocket.close")
+            self.assertEqual(frame["code"], 4403)
             await socket.disconnect()
 
         async_to_sync(scenario)()

@@ -154,8 +154,12 @@ SPECTACULAR_SETTINGS = {
 }
 
 # ---- JWT / COOKIES (spec 20.5, 46) ----
+AUTH_SESSION_IDLE_SECONDS = int(os.getenv("AUTH_SESSION_IDLE_MINUTES", "30")) * 60
+AUTH_SESSION_MAX_SECONDS = int(os.getenv("AUTH_SESSION_MAX_HOURS", "8")) * 3600
+if AUTH_SESSION_IDLE_SECONDS < 120 or AUTH_SESSION_MAX_SECONDS < AUTH_SESSION_IDLE_SECONDS:
+    raise ValueError("Session limits require idle >= 2 minutes and maximum >= idle timeout.")
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv("JWT_ACCESS_MINUTES", "30"))),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.getenv("JWT_ACCESS_MINUTES", "5"))),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=int(os.getenv("JWT_REFRESH_DAYS", "7"))),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,

@@ -22,6 +22,12 @@ The unit files and Nginx example assume both checkouts are in
    threading, authorized attachment downloads, and a blocked unauthorized
    download. A ticket action succeeding means its mail job was saved, not that
    SMTP has already delivered it.
+   Deploy frontend/backend session changes together and sign in again. Verify
+   idle expiry, Stay signed in, the fixed eight-hour maximum, logout with an
+   expired access token, cross-tab logout, and rejection of captured tokens
+   after logout. Configure `AUTH_SESSION_IDLE_MINUTES=30`,
+   `AUTH_SESSION_MAX_HOURS=8`, and `JWT_ACCESS_MINUTES=5` explicitly. Schedule
+   `manage.py clearsessions` and `manage.py flushexpiredtokens` daily.
 6. In staging, simulate Redis and SMTP failures and a worker restart. Confirm
    unsent mail remains in `ticket_outbound_mail`, is recovered, and failed jobs
    are visible and retryable. A crash after SMTP accepts a message can produce

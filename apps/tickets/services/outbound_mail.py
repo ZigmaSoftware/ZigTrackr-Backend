@@ -90,3 +90,25 @@ def queue_closed_notice(*, ticket, remarks=""):
         ),
         in_reply_to=ticket.ack_message_id,
     )
+
+
+def queue_deleted_notice(*, ticket, reason):
+    """Snapshot the reason before soft deletion; delivery may happen later."""
+    original = ticket.original_mail
+    recipient = (ticket.reported_by_email or (original.from_email if original else "") or "").strip()
+    # Email titles originate outside the application; never allow header lines.
+    title = " ".join(ticket.title.split())
+    return _enqueue(
+        ticket=ticket, kind="DELETED", event_key=f"DELETED:{ticket.pk}",
+        recipient=recipient,
+        subject=f"Request deleted [{ticket.reference}] - {title}",
+        body=(
+            "Hello,\n\n"
+            "Your request has been removed from the support queue before assignment.\n\n"
+            f"Reference: {ticket.reference}\nRequest: {title}\n\n"
+            f"Reason for deletion:\n{reason.strip()}\n\n"
+            "If you still need assistance, please send a new request to our support team.\n\n"
+            "Regards,\nZigTrackr Support\n"
+        ),
+        in_reply_to=ticket.ack_message_id or (original.message_id if original else ""),
+    )
