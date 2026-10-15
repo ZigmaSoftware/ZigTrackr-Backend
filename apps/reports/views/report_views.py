@@ -51,7 +51,10 @@ class DailyBugReportView(ReportView):
     report_name = "daily-bug-report"
 
     def build(self, request):
-        return daily_bug_report(request.user, _parse_date(request.query_params.get("date")))
+        return daily_bug_report(
+            request.user, _parse_date(request.query_params.get("date")),
+            request=request,
+        )
 
 
 class EmployeeReportView(ReportView):
@@ -107,6 +110,7 @@ class ClosureReportView(ReportView):
             request.user,
             date_from=_parse_date(request.query_params.get("date_from")),
             date_to=_parse_date(request.query_params.get("date_to")),
+            request=request,
         )
 
 

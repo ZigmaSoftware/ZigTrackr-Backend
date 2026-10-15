@@ -31,7 +31,7 @@ def _grouped(queryset):
     return queryset.order_by()
 
 
-def daily_bug_report(user, report_date=None):
+def daily_bug_report(user, report_date=None, request=None):
     """Opening + New - Closed = Closing (spec 33).
 
     "Opening" is reconstructed as: reported before the date, and either never
@@ -42,6 +42,8 @@ def daily_bug_report(user, report_date=None):
     opening balance can be off by one for that bug. The exact version replays
     bug_status_history and is deferred.
     """
+    from apps.bugs.serializers import BugListSerializer
+
     report_date = report_date or local_today()
     qs = scope_bug_queryset(
         base_bug_queryset(report_date).model.objects.filter(is_deleted=False), user)
@@ -55,6 +57,15 @@ def daily_bug_report(user, report_date=None):
         bug__in=qs.values("id"), reopened_at__date=report_date).count()
 
     annotated = _scoped(user, report_date)
+
+    # Bug detail list: new on that day plus still-open bugs visible on that day.
+    bug_qs = annotated.filter(
+        Q(reported_date=report_date)
+        | Q(closed_date=report_date)
+        | (Q(reported_date__lte=report_date) & (Q(closed_date__isnull=True) | Q(closed_date__gte=report_date)))
+    ).order_by("-is_overdue", "-age_days")[:100]
+    ctx = {"request": request} if request else {}
+
     return {
         "report_date": report_date.isoformat(),
         "opening_bugs": opening,
@@ -66,6 +77,7 @@ def daily_bug_report(user, report_date=None):
         "critical": annotated.filter(priority__code="CRITICAL")
                              .exclude(status__in=TERMINAL_STATUSES).count(),
         "update_pending": annotated.filter(is_update_pending=True).count(),
+        "bugs": BugListSerializer(bug_qs, many=True, context=ctx).data,
     }
 
 
@@ -158,7 +170,9 @@ def overdue_report(user, today=None):
     }
 
 
-def closure_report(user, date_from=None, date_to=None, today=None):
+def closure_report(user, date_from=None, date_to=None, today=None, request=None):
+    from apps.bugs.serializers import BugListSerializer
+
     today = today or local_today()
     date_to = date_to or today
     date_from = date_from or (today - datetime.timedelta(days=30))
@@ -170,6 +184,11 @@ def closure_report(user, date_from=None, date_to=None, today=None):
     by_user = (_grouped(qs).filter(closed_by__isnull=False)
                .values("closed_by__unique_id", "closed_by__full_name")
                .annotate(count=Count("id")).order_by("-count"))
+    by_project = (_grouped(qs).filter(project__isnull=False)
+                  .values("project__unique_id", "project__name")
+                  .annotate(count=Count("id")).order_by("-count"))
+
+    ctx = {"request": request} if request else {}
     return {
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
@@ -178,12 +197,24 @@ def closure_report(user, date_from=None, date_to=None, today=None):
         "by_user": [{"id": str(r["closed_by__unique_id"]),
                      "name": r["closed_by__full_name"], "count": r["count"]}
                     for r in by_user],
+        "by_project": [{"id": str(r["project__unique_id"]),
+                        "name": r["project__name"], "count": r["count"]}
+                       for r in by_project],
+        "bugs": BugListSerializer(qs.order_by("-closed_date")[:200], many=True, context=ctx).data,
     }
 
 
 def root_cause_report(user, today=None, **filters):
-    """Spec 36, filterable by project/module/date/developer/priority/severity."""
-    qs = _scoped(user, today).filter(root_cause_type__isnull=False)
+    """Spec 36, filterable by project/module/date/developer/priority/severity.
+
+    Includes bugs that have free-text root_cause but no root_cause_type FK set —
+    these are grouped under an "Unclassified" row so they are visible in the report
+    rather than silently omitted. Bugs with neither field are excluded.
+    """
+    # Bugs that have either a typed root cause category OR at least free-text root cause
+    qs = _scoped(user, today).filter(
+        Q(root_cause_type__isnull=False) | Q(root_cause__isnull=False) & ~Q(root_cause="")
+    )
     if filters.get("project"):
         qs = qs.filter(project__unique_id=filters["project"])
     if filters.get("module"):
@@ -201,7 +232,18 @@ def root_cause_report(user, today=None, **filters):
 
     rows = (_grouped(qs).values("root_cause_type__code", "root_cause_type__name")
             .annotate(count=Count("id")).order_by("-count"))
-    total = sum(r["count"] for r in rows) or 1
-    return [{"code": r["root_cause_type__code"], "name": r["root_cause_type__name"],
-             "count": r["count"], "percentage": round(r["count"] * 100.0 / total, 1)}
-            for r in rows]
+
+    result = []
+    for r in rows:
+        code = r["root_cause_type__code"]
+        name = r["root_cause_type__name"]
+        result.append({
+            "code": code or "UNCLASSIFIED",
+            "name": name or "Unclassified",
+            "count": r["count"],
+        })
+
+    total = sum(r["count"] for r in result) or 1
+    for r in result:
+        r["percentage"] = round(r["count"] * 100.0 / total, 1)
+    return result
