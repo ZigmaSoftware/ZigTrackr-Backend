@@ -7,6 +7,7 @@ from common.models import NamedMaster
 
 
 class DepartmentMaster(NamedMaster):
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="departments")
     code = models.CharField(max_length=20, blank=True, default="")
 
     class Meta:
@@ -18,6 +19,7 @@ class DepartmentMaster(NamedMaster):
 
 
 class TeamMaster(NamedMaster):
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="teams")
     code = models.CharField(max_length=20, blank=True, default="")
     team_lead = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
@@ -33,6 +35,7 @@ class TeamMaster(NamedMaster):
 
 
 class SiteMaster(NamedMaster):
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="sites")
     code = models.CharField(max_length=20, blank=True, default="")
     address = models.TextField(blank=True, default="")
 

@@ -17,6 +17,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.audit.models import AuditAction
+from apps.notifications.models import NotificationType
+from apps.notifications.services import notify
 from apps.tickets.constants import (
     WORK_TRANSITIONS,
     ClassificationMethod,
@@ -72,18 +74,50 @@ def _status_for(ticket_type, needs_review):
 
 
 @transaction.atomic
+
+def _notify_new_ticket(ticket, *, actor=None):
+    """Tell whoever triages the queue that something new landed.
+
+    Scoped to the people who can actually act on it -- classify or assign --
+    rather than everyone with view_all, so Management's read-only tier is not
+    pulled into an operational alert.
+    """
+    from common.permissions.require import user_ids_with_permission
+
+    notify(
+        recipients=user_ids_with_permission(
+            "tickets.ticket.classify", "tickets.ticket.assign",
+        ),
+        notification_type=NotificationType.TICKET_UNASSIGNED_NEW,
+        title=f"New ticket: {ticket.reference}",
+        message=ticket.title,
+        ticket=ticket,
+        link=f"/tickets?ticket={ticket.unique_id}",
+        actor=actor,
+    )
+
+
 def create_manual_ticket(*, actor, ticket_type, title, description, requester=None,
                          source=TicketSource.MANUAL, reported_by_email="",
-                         reported_by_name="", request=None):
+                         reported_by_name="", company=None, request=None):
     """Create a minimal manually entered SupportTicket.
 
     Assignment/workflow fields are deliberately absent from this intake step;
     Admin/TL enriches and routes the ticket from the unassigned queue.
     """
     reporter = requester or actor
+    from common.permissions.company import require_company_access, validate_company_relations
+    from common.exceptions.domain import WorkflowValidationError
+    company = company or getattr(actor, "company", None)
+    if not company:
+        raise WorkflowValidationError({"company": ["Select a company."]})
+    require_company_access(actor, company)
+    if not reporter.is_superuser:
+        validate_company_relations(company.pk, {"requester": reporter})
     email = reported_by_email or getattr(reporter, "email", "") or ""
     name = reported_by_name or getattr(reporter, "display_name", "") or ""
     ticket = SupportTicket.objects.create(
+        company=company,
         ref_no=generate_ref_no(local_today()),
         source=source,
         ticket_type=ticket_type,
@@ -117,6 +151,7 @@ def create_manual_ticket(*, actor, ticket_type, title, description, requester=No
         public_description=f"Your request was received and registered as {ticket.ref_no}.",
         actor=actor,
     )
+    _notify_new_ticket(ticket, actor=actor)
     return ticket
 
 
@@ -142,7 +177,8 @@ def create_ticket_from_mail(*, mail, classification, actor=None, request=None):
     def resolve(model, unique_id):
         if not unique_id:
             return None
-        return model.objects.filter(unique_id=unique_id, is_deleted=False).first()
+        field = {"ProjectMaster": "company_id", "ModuleMaster": "project__company_id", "SubmoduleMaster": "module__project__company_id"}[model.__name__]
+        return model.objects.filter(unique_id=unique_id, is_deleted=False, **{field: mail.company_id}).first()
 
     explicit_type = explicit_subject_ticket_type(mail.subject)
     direct_bug = explicit_type == TicketType.BUG and not classification.needs_review
@@ -161,6 +197,7 @@ def create_ticket_from_mail(*, mail, classification, actor=None, request=None):
     ticket_type = explicit_type or (classification.ticket_type or TicketType.UNKNOWN)
 
     ticket = SupportTicket(
+        company=mail.company,
         ref_no=generate_ref_no(local_today()),
         source=TicketSource.EMAIL,
         ticket_type=ticket_type,
@@ -199,6 +236,7 @@ def create_ticket_from_mail(*, mail, classification, actor=None, request=None):
 
         bug = create_bug(
             actor=system_user,
+            company=mail.company,
             request=request,
             project=None,
             module=resolve(ModuleMaster, classification.module_unique_id),
@@ -234,6 +272,7 @@ def create_ticket_from_mail(*, mail, classification, actor=None, request=None):
         public_description=f"Your request was received and registered as {ticket.ref_no}.",
         actor_email=mail.from_email,
     )
+    _notify_new_ticket(ticket, actor=system_user)
     return ticket
 
 
@@ -286,6 +325,12 @@ def transition_work(*, ticket, actor, to_status, remarks="", payload=None, reque
 
     if to_status == TicketStatus.IN_PROGRESS:
         from apps.tickets.services.policy import ensure_owner_can_start
+        from apps.tickets.services.work_details_service import ensure_work_details
+        from rest_framework.exceptions import PermissionDenied
+
+        if ticket.owner_id != actor.pk:
+            raise PermissionDenied("Only the assigned developer can start work.")
+        ensure_work_details(ticket)
 
         ensure_owner_can_start(ticket.owner_id, exclude_ticket_id=ticket.pk)
 
@@ -381,6 +426,17 @@ def transition_work(*, ticket, actor, to_status, remarks="", payload=None, reque
                                 else f"Your request is now {TicketStatus(to_status).label.lower()}."),
             actor=actor,
         )
+    # The owner is told their ticket moved; the actor is excluded inside
+    # notify(), so a developer moving their own ticket is not notified.
+    notify(
+        recipients=[ticket.owner_id],
+        notification_type=NotificationType.TICKET_STATUS_CHANGED,
+        title=f"{ticket.reference} is now {TicketStatus(to_status).label}",
+        message=ticket.title,
+        ticket=ticket,
+        link=f"/tickets?ticket={ticket.unique_id}",
+        actor=actor,
+    )
     return ticket
 
 
@@ -391,6 +447,12 @@ def start_service_work(*, ticket, actor, remarks="", request=None):
     of borrowing bug root-cause/testing states.
     """
     _require_ticket_type(ticket, (TicketType.SERVICE_REQUEST,))
+    from apps.tickets.services.work_details_service import ensure_work_details
+    from rest_framework.exceptions import PermissionDenied
+
+    if ticket.owner_id != actor.pk:
+        raise PermissionDenied("Only the assigned developer can start work.")
+    ensure_work_details(ticket)
     if ticket.owner_id is None:
         from common.exceptions.domain import WorkflowValidationError
 
@@ -568,6 +630,11 @@ def confirm_classification(*, ticket, actor, ticket_type, title=None, descriptio
     """
     from apps.accounts.services.system_user import get_mail_intake_user
     from apps.bugs.services.bug_service import create_bug
+
+    from common.permissions.company import require_company_access, validate_company_relations
+    require_company_access(actor, ticket)
+    validate_company_relations(ticket.company_id, {"project": project, "module": module,
+        "submodule": submodule, "priority": priority, "severity": severity, "owner": owner})
 
     if ticket.bug_id:
         # Already confirmed. Returning the existing ticket keeps a double

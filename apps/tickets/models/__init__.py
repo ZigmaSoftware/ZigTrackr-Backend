@@ -1,4 +1,5 @@
 from .assignment_rule import AssignmentRule
+from .access_otp import TicketAccessOtp
 from .activity import TicketActivity, TicketAssignmentHistory, TicketReopenHistory
 from .attachment import TicketAttachment
 from .chat import TicketChatMessage, TicketChatRevision
@@ -9,6 +10,7 @@ from .update import TicketUpdate
 
 __all__ = [
     "AssignmentRule",
+    "TicketAccessOtp",
     "TicketActivity",
     "TicketAssignmentHistory",
     "TicketReopenHistory",

@@ -28,6 +28,14 @@ def deliver_outbound_mail(job_id):
             return job.status
         if job.status == OutboundMail.Status.SENDING and job.claimed_at and job.claimed_at > now - LEASE:
             return "IN_FLIGHT"
+        # A passcode that outlived its own validity is worse than no mail at
+        # all: the recipient would type a code the server has already expired.
+        if job.expires_at and job.expires_at <= now:
+            job.status = OutboundMail.Status.FAILED
+            job.last_error = "Expired before delivery"
+            job.next_attempt_at = None
+            job.save(update_fields=["status", "last_error", "next_attempt_at"])
+            return job.status
         if job.next_attempt_at and job.next_attempt_at > now:
             return "NOT_DUE"
         job.status = OutboundMail.Status.SENDING
@@ -41,10 +49,27 @@ def deliver_outbound_mail(job_id):
             subject=job.subject, body=job.body,
             from_email=job.from_email,
             to=[job.recipient],
+            # A reachable Reply-To matters for both people and filters: mail
+            # that cannot be replied to looks like bulk mail.
+            reply_to=[settings.DEFAULT_FROM_EMAIL] if settings.DEFAULT_FROM_EMAIL else None,
             connection=get_connection(timeout=settings.EMAIL_TIMEOUT),
         )
+        if job.html_body:
+            email.attach_alternative(job.html_body, "text/html")
         email.extra_headers["Message-ID"] = f"<{job.message_id}>"
         email.extra_headers["Auto-Submitted"] = "auto-replied" if job.kind == "ACK" else "auto-generated"
+        # Deliverability headers. These do not replace SPF/DKIM/DMARC, but a
+        # transactional message with no List-Unsubscribe and no Precedence is
+        # scored closer to bulk mail than it should be.
+        email.extra_headers["X-Entity-Ref-ID"] = job.event_key
+        if job.kind == "OTP":
+            # A sign-in code is strictly transactional: it must never be
+            # batched, deferred or treated as a mailing-list message.
+            email.extra_headers["Precedence"] = "urgent"
+            email.extra_headers["X-Priority"] = "1"
+            email.extra_headers["Importance"] = "high"
+        else:
+            email.extra_headers["Precedence"] = "bulk"
         if job.in_reply_to:
             email.extra_headers["In-Reply-To"] = f"<{job.in_reply_to}>"
             email.extra_headers["References"] = f"<{job.in_reply_to}>"

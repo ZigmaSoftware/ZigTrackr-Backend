@@ -25,12 +25,14 @@ visibility would suggest).
 from django.db.models import Q
 
 from common.permissions.require import has_permission
+from common.permissions.company import can_access_company, scope_company_queryset
 
 
 def scope_bug_queryset(queryset, user):
     if user is None or not getattr(user, "is_authenticated", False):
         return queryset.none()
 
+    queryset = scope_company_queryset(queryset, user)
     if getattr(user, "is_superuser", False) or has_permission(user, "bugs.bug.view_all"):
         return queryset
 
@@ -92,6 +94,8 @@ def can_mutate_bug(user, bug):
     it (e.g. bugs.update.view on the updates action). Visibility and write
     authority are separate questions with separate answers.
     """
+    if not can_access_company(user, bug):
+        return False
     if getattr(user, "is_superuser", False) or has_permission(user, "bugs.bug.mutate_all"):
         return True
 
@@ -142,6 +146,7 @@ def scope_ticket_queryset(queryset, user):
     if user is None or not getattr(user, "is_authenticated", False):
         return queryset.none()
 
+    queryset = scope_company_queryset(queryset, user)
     if getattr(user, "is_superuser", False) or has_permission(user, "tickets.ticket.view_all"):
         return queryset
 
@@ -195,6 +200,8 @@ def can_mutate_ticket(user, ticket):
     for reporting and must never be able to write through an endpoint whose
     codename gate happens to admit it.
     """
+    if not can_access_company(user, ticket):
+        return False
     if getattr(user, "is_superuser", False) or has_permission(user, "tickets.ticket.mutate_all"):
         return True
 
@@ -234,6 +241,7 @@ def scope_mail_queryset(queryset, user):
     if user is None or not getattr(user, "is_authenticated", False):
         return queryset.none()
 
+    queryset = scope_company_queryset(queryset, user)
     if getattr(user, "is_superuser", False) or has_permission(user, "mail_intake.mail.view_all"):
         return queryset
 

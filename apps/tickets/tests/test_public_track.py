@@ -5,6 +5,8 @@ from datetime import timedelta
 from django.core import mail
 from django.test import Client, TestCase
 from django.test import override_settings
+from unittest import mock
+
 from django.core.cache import cache
 from django.utils import timezone
 
@@ -41,9 +43,33 @@ class PublicTrackTests(TestCase):
         )
 
     def verify(self, email="sender@example.com"):
-        return self.post("/api/v1/tickets/public/track/verify/", {
-            "ticket_no": self.ticket.ticket_no, "email": email,
+        """Drive the two-step passcode flow and return the final response.
+
+        Other tests only need an authenticated session, so the OTP round trip
+        is hidden here. The code is read from the database rather than the
+        outbox: only its hash is stored, so the plain value is captured at
+        generation time by patching the generator.
+        """
+        with mock.patch(
+            "apps.tickets.services.ticket_otp_service.generate_code",
+            return_value="123456",
+        ):
+            self.post("/api/v1/tickets/public/track/request-otp/", {"email": email})
+        return self.post("/api/v1/tickets/public/track/verify-otp/", {
+            "email": email, "code": "123456",
         })
+
+    def detail(self, email="sender@example.com"):
+        """Sign in, then read the ticket's own payload.
+
+        verify-otp now returns the LIST of a verified address's tickets, so
+        tests asserting on one ticket fetch its detail explicitly.
+        """
+        self.verify(email)
+        return self.client.get(
+            "/api/v1/tickets/public/track/ticket/",
+            {"ticket_no": self.ticket.ticket_no},
+        )
 
     def close_ticket(self, closed_at=None):
         self.ticket.status = TicketStatus.CLOSED
@@ -53,18 +79,24 @@ class PublicTrackTests(TestCase):
             occurred_at=closed_at or timezone.now(),
         )
 
-    def test_verify_requires_matching_pair_and_issues_scoped_cookie(self):
+    def test_verify_lists_the_addresss_tickets_and_issues_scoped_cookie(self):
+        # An address that owns nothing fails at the code step: no passcode was
+        # ever issued for it, so there is nothing to verify.
         bad = self.verify("wrong@example.com")
-        self.assertEqual(bad.status_code, 200)
-        self.assertEqual(bad.json()["data"], {"found": False})
-        self.assertFalse(self.client.cookies["zigtrackr_public_ticket"].value)
+        self.assertEqual(bad.status_code, 400)
+        self.assertFalse(self.client.cookies.get("zigtrackr_public_ticket", ""))
         self.assertEqual(
             self.client.get("/api/v1/tickets/public/track/activity/").status_code, 404,
         )
 
         good = self.verify()
         self.assertEqual(good.status_code, 200, good.content)
-        self.assertTrue(good.json()["data"]["found"])
+        data = good.json()["data"]
+        # Sign-in now returns every ticket the verified address owns.
+        self.assertEqual(data["email"], "sender@example.com")
+        self.assertIn(
+            self.ticket.ticket_no, [row["ticket_no"] for row in data["tickets"]],
+        )
         cookie = self.client.cookies["zigtrackr_public_ticket"]
         self.assertTrue(cookie["httponly"])
         self.assertEqual(cookie["path"], "/api/v1/tickets/public/track/")
@@ -73,8 +105,8 @@ class PublicTrackTests(TestCase):
         import json
 
         response = self.client.post(
-            "/api/v1/tickets/public/track/verify/",
-            data=json.dumps({"ticket_no": self.ticket.ticket_no, "email": "sender@example.com"}),
+            "/api/v1/tickets/public/track/request-otp/",
+            data=json.dumps({"email": "sender@example.com"}),
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
@@ -197,9 +229,127 @@ class PublicTrackTests(TestCase):
         self.assertEqual(duplicate.status_code, 400, duplicate.content)
         self.assertEqual(TicketReopenHistory.objects.filter(ticket=self.ticket).count(), 1)
 
+    def test_resolved_ticket_can_be_confirmed_fixed_once_and_cannot_reopen(self):
+        self.close_ticket()
+        data = self.detail().json()["data"]
+        self.assertEqual(data["public_stage"], "RESOLVED")
+        self.assertTrue(data["can_confirm_close"])
+        self.assertIsNotNone(data["auto_closes_at"])
+        path = "/api/v1/tickets/public/track/close/"
+        for _ in range(2):
+            response = self.post(path, {"ticket_no": self.ticket.ticket_no})
+            self.assertEqual(response.status_code, 200, response.content)
+            data = response.json()["data"]
+            self.assertEqual(data["public_stage"], "CLOSED")
+            self.assertFalse(data["can_reopen"])
+            self.assertFalse(data["can_confirm_close"])
+        self.assertEqual(self.ticket.activities.filter(event_type="TICKET_REQUESTER_CLOSED").count(), 1)
+        response = self.post("/api/v1/tickets/public/track/reopen/", {"reason": "Again"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_confirmation_requires_verified_ownership_and_csrf(self):
+        self.close_ticket()
+        path = "/api/v1/tickets/public/track/close/"
+        self.assertEqual(self.post(path, {"ticket_no": self.ticket.ticket_no}).status_code, 404)
+        self.verify()
+        other = make_ticket(ticket_no="TKT-2610-0999", reported_by_email="other@example.com")
+        self.assertEqual(self.post(path, {"ticket_no": other.ticket_no}).status_code, 404)
+        response = self.client.post(path, data='{}', content_type="application/json")
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(self.ticket.activities.filter(event_type="TICKET_REQUESTER_CLOSED").exists())
+
+    def test_active_ticket_cannot_be_closed_by_requester(self):
+        self.verify()
+        response = self.post("/api/v1/tickets/public/track/close/", {"ticket_no": self.ticket.ticket_no})
+        self.assertEqual(response.status_code, 400)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, TicketStatus.IN_PROGRESS)
+
+    def test_automatic_closure_finishes_at_exact_two_day_deadline(self):
+        now = timezone.now()
+        self.close_ticket(now - timedelta(days=2))
+        self.verify()
+        with mock.patch("apps.tickets.services.public_track_service.timezone.now", return_value=now):
+            data = self.client.get("/api/v1/tickets/public/track/ticket/").json()["data"]
+        self.assertEqual(data["public_stage"], "CLOSED")
+        self.assertFalse(data["can_confirm_close"])
+        self.assertFalse(data["can_reopen"])
+
+    def test_confirmation_of_an_old_cycle_does_not_close_a_new_resolution(self):
+        self.close_ticket(timezone.now() - timedelta(hours=4))
+        TicketActivity.objects.create(
+            ticket=self.ticket, event_type="TICKET_REQUESTER_CLOSED", title="Confirmed",
+            occurred_at=timezone.now() - timedelta(hours=3),
+        )
+        self.close_ticket(timezone.now() - timedelta(hours=1))
+        data = self.detail().json()["data"]
+        self.assertTrue(data["can_reopen"])
+        self.assertTrue(data["can_confirm_close"])
+
+    def test_signout_expires_the_tracking_cookie_at_its_original_path(self):
+        self.verify()
+        response = self.post("/api/v1/tickets/public/track/signout/", {})
+        self.assertEqual(response.status_code, 200)
+        cookie = response.cookies["zigtrackr_public_ticket"]
+        self.assertEqual(cookie["max-age"], 0)
+        self.assertEqual(cookie["path"], "/api/v1/tickets/public/track/")
+        self.assertEqual(self.client.get("/api/v1/tickets/public/track/tickets/").status_code, 404)
+
+    def test_list_closure_statuses_and_unread_counts_use_one_query(self):
+        from apps.tickets.services.public_track_service import public_ticket_list
+
+        self.close_ticket()
+        for _ in range(3):
+            TicketActivity.objects.create(ticket=self.ticket, event_type="WORK_STARTED", title="Started", occurred_at=timezone.now())
+        TicketChatMessage.objects.create(ticket=self.ticket, sender_type="STAFF", sender_display_name="Support", message_text="Done")
+        with self.assertNumQueries(1):
+            rows = public_ticket_list("sender@example.com")
+        self.assertEqual(rows[0]["public_stage"], "RESOLVED")
+        self.assertEqual(rows[0]["unread_count"], 1)
+
+    def test_resent_status_matches_the_list_and_detail_progress(self):
+        self.ticket.status = TicketStatus.ASSIGNED
+        self.ticket.save(update_fields=["status"])
+        now = timezone.now()
+        for i, event in enumerate(("WORK_STARTED", "TICKET_RECTIFIED", "TICKET_RETURNED_TO_DEVELOPER")):
+            TicketActivity.objects.create(
+                ticket=self.ticket, event_type=event, title=event,
+                occurred_at=now - timedelta(minutes=3 - i),
+            )
+        data = self.detail().json()["data"]
+        self.assertEqual(data["public_stage"], "RESENT")
+        self.assertEqual(data["progress"][0]["code"], "RESENT")
+        rows = self.client.get("/api/v1/tickets/public/track/tickets/").json()["data"]["tickets"]
+        self.assertEqual(rows[0]["public_stage"], "RESENT")
+        self.assertEqual(rows[0]["status_label"], "Resent")
+
+    def test_bug_progress_uses_typed_history_without_exposing_private_remarks(self):
+        from apps.bugs.models import BugStatusHistory
+        from apps.bugs.tests.factories import make_bug, make_masters
+
+        project, module, priority, severity = make_masters()
+        bug = make_bug(
+            bug_no="BUG-2610-0101", reporter=self.owner, project=project,
+            module=module, priority=priority, severity=severity,
+            owner=self.owner, status="TESTING",
+        )
+        self.ticket.bug = bug
+        self.ticket.save(update_fields=["bug"])
+        previous = "NEW"
+        for status in ("ASSIGNED", "IN_PROGRESS", "TESTING", "ASSIGNED", "IN_PROGRESS", "TESTING"):
+            BugStatusHistory.objects.create(
+                bug=bug, from_status=previous, to_status=status,
+                changed_by=self.owner, remarks="Private diagnostic details",
+            )
+            previous = status
+        data = self.detail().json()["data"]
+        self.assertEqual(data["progress"][0]["code"], "RESENT")
+        self.assertEqual(data["progress"][-2]["state"], "current")
+        self.assertNotIn("Private diagnostic details", str(data))
+
     def test_reopen_expires_two_days_after_closure(self):
         self.close_ticket(timezone.now() - timedelta(days=2, seconds=1))
-        self.assertFalse(self.verify().json()["data"]["can_reopen"])
+        self.assertFalse(self.detail().json()["data"]["can_reopen"])
         response = self.post("/api/v1/tickets/public/track/reopen/", {"reason": "Still broken."})
         self.assertEqual(response.status_code, 400, response.content)
         self.ticket.refresh_from_db()
@@ -209,13 +359,13 @@ class PublicTrackTests(TestCase):
     def test_reopen_window_uses_latest_closure_not_ticket_update_time(self):
         self.close_ticket(timezone.now() - timedelta(days=3))
         self.ticket.save(update_fields=["updated_at"])
-        self.assertFalse(self.verify().json()["data"]["can_reopen"])
+        self.assertFalse(self.detail().json()["data"]["can_reopen"])
 
         TicketActivity.objects.create(
             ticket=self.ticket, event_type="TICKET_CLOSED", title="Ticket Closed",
             occurred_at=timezone.now() - timedelta(hours=47),
         )
-        self.assertTrue(self.verify().json()["data"]["can_reopen"])
+        self.assertTrue(self.detail().json()["data"]["can_reopen"])
         self.assertEqual(
             self.post("/api/v1/tickets/public/track/reopen/", {"reason": "Issue persists."}).status_code,
             200,
@@ -224,7 +374,7 @@ class PublicTrackTests(TestCase):
     def test_closed_ticket_without_closure_timestamp_cannot_reopen(self):
         self.ticket.status = TicketStatus.CLOSED
         self.ticket.save(update_fields=["status"])
-        self.assertFalse(self.verify().json()["data"]["can_reopen"])
+        self.assertFalse(self.detail().json()["data"]["can_reopen"])
         self.assertEqual(
             self.post("/api/v1/tickets/public/track/reopen/", {"reason": "Still broken."}).status_code,
             400,
@@ -271,14 +421,14 @@ class PublicTrackTests(TestCase):
         self.ticket.ticket_type = TicketType.BUG
         self.ticket.status = TicketStatus.CLOSED
         self.ticket.save(update_fields=["bug", "ticket_type", "status"])
-        self.assertFalse(self.verify().json()["data"]["can_reopen"])
+        self.assertFalse(self.detail().json()["data"]["can_reopen"])
         self.assertEqual(
             self.post("/api/v1/tickets/public/track/reopen/", {"reason": "Still broken."}).status_code,
             400,
         )
         bug.closed_at = timezone.now() - timedelta(hours=1)
         bug.save(update_fields=["closed_at"])
-        self.assertTrue(self.verify().json()["data"]["can_reopen"])
+        self.assertTrue(self.detail().json()["data"]["can_reopen"])
         response = self.post("/api/v1/tickets/public/track/reopen/", {"reason": "Still broken."})
         self.assertEqual(response.status_code, 200, response.content)
         bug.refresh_from_db()

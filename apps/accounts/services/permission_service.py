@@ -12,6 +12,8 @@ from apps.audit.models import AuditAction
 from common.permissions.codenames import ROLE_ADMIN
 from common.permissions.ticket_submodules import TICKET_SUBMODULES
 from common.services.audit import record_audit
+from apps.accounts.services.company_roles import lock_company_role, publish_role_access_changed, require_role_management, role_settings
+from common.permissions.company import is_super_admin
 
 PROTECTED_ADMIN_PERMISSIONS = frozenset({
     "admin.role.view", "admin.role.manage", "admin.permission.view", "admin.permission.manage",
@@ -19,7 +21,7 @@ PROTECTED_ADMIN_PERMISSIONS = frozenset({
 SUBMODULE_LABELS = {"teams.workload": "Developer Workload", "teams.assignment": "Assignment Board"}
 
 
-def permission_submodules(permissions):
+def permission_submodules(permissions, *, protect_admin=False):
     permissions = list(permissions)
     active_codes = {p.codename for p in permissions}
     groups = {}
@@ -36,8 +38,6 @@ def permission_submodules(permissions):
             "permissions": [], "protected_roles": [],
         })
         group["permissions"].append(permission.codename)
-        if permission.codename in PROTECTED_ADMIN_PERMISSIONS:
-            group["protected_roles"] = [ROLE_ADMIN]
     for screen, name, module, _, actions in TICKET_SUBMODULES:
         key, gate = f"{module}.{screen}", f"tickets.{screen}.access"
         if gate in active_codes:
@@ -47,18 +47,24 @@ def permission_submodules(permissions):
     # and ticket read access; disabling ticket menus must not break that page.
     if "bugs.update" in groups and "tickets.ticket.view" in active_codes:
         groups["bugs.update"]["permissions"].append("tickets.ticket.view")
+    if protect_admin:
+        for group in groups.values():
+            group["protected_roles"] = [ROLE_ADMIN]
     return groups
 
 
 @transaction.atomic
-def update_role_grants(*, role, actor, permissions=None, submodule_changes=None, request=None):
+def update_role_grants(*, role, actor, permissions=None, submodule_changes=None, request=None, company=None):
+    if company is None and not is_super_admin(actor):
+        company = actor.company
+    require_role_management(actor, role, company=company)
     if (permissions is None) == (submodule_changes is None):
         raise ValidationError("Provide either permissions or submodule_changes, not both.")
     # Lock the parent as well as its children: the empty-grant case otherwise
     # has no rows to lock, and two administrators can race on the same role.
     role = Role.objects.select_for_update().get(pk=role.pk)
     active_permissions = {p.codename: p for p in Permission.objects.filter(is_active=True, is_deleted=False)}
-    existing = set(RolePermission.objects.filter(role=role).values_list("permission__codename", flat=True))
+    existing = role_settings([role], company)[0][role.pk]
     if submodule_changes is not None:
         groups = permission_submodules(active_permissions.values())
         unknown = {change["key"] for change in submodule_changes} - groups.keys()
@@ -90,20 +96,31 @@ def update_role_grants(*, role, actor, permissions=None, submodule_changes=None,
         unknown = wanted - active_permissions.keys()
         if unknown:
             raise ValidationError({"permissions": [f"Unknown permission(s): {', '.join(sorted(unknown))}."]})
-    if role.code == ROLE_ADMIN and not PROTECTED_ADMIN_PERMISSIONS.issubset(wanted):
-        raise ValidationError({"permissions": ["The Admin role must keep role and permission management access."]})
-
     added, removed = wanted - existing, existing - wanted
-    if removed:
-        RolePermission.objects.filter(role=role, permission__codename__in=removed).delete()
-    RolePermission.objects.bulk_create([
-        RolePermission(role=role, permission=active_permissions[code], created_by=getattr(actor, "unique_id", None))
-        for code in sorted(added)
-    ])
+    if not is_super_admin(actor):
+        from common.permissions.require import resolve_permission_codes
+        if added - resolve_permission_codes(actor):
+            raise ValidationError({"permissions": ["You can grant only permissions you currently hold."]})
+    if company is not None:
+        entity = lock_company_role(role, company, actor)
+        entity.permissions.set([active_permissions[code] for code in wanted])
+        entity.updated_by = actor.unique_id
+        entity.save(update_fields=["updated_by", "updated_at"])
+    else:
+        entity = role
+        if removed:
+            RolePermission.objects.filter(role=role, permission__codename__in=removed).delete()
+        RolePermission.objects.bulk_create([
+            RolePermission(role=role, permission=active_permissions[code], created_by=getattr(actor, "unique_id", None))
+            for code in sorted(added)
+        ])
     record_audit(
-        action=AuditAction.PERMISSION_CHANGED, entity=role, actor=actor,
+        action=AuditAction.PERMISSION_CHANGED, entity=entity, actor=actor,
         old_value=", ".join(sorted(existing)), new_value=", ".join(sorted(wanted)),
         remarks="Submodule access updated." if submodule_changes is not None else "Role permission grants updated.",
         metadata={"added": sorted(added), "removed": sorted(removed),
+                  "role": role.code, "company": str(company.unique_id) if company else None,
                   "submodule_changes": submodule_changes or []}, request=request,
     )
+    if added or removed:
+        transaction.on_commit(lambda: publish_role_access_changed(role.pk, company.pk if company else None))

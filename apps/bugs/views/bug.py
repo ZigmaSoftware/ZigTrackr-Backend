@@ -159,7 +159,7 @@ class BugViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelVi
     # ---- CRUD ----
 
     def create(self, request, *args, **kwargs):
-        serializer = BugWriteSerializer(data=request.data)
+        serializer = BugWriteSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         bug = create_bug(actor=request.user, request=request, **serializer.validated_data)
         return created(BugDetailSerializer(self._annotated(bug)).data,
@@ -167,8 +167,20 @@ class BugViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelVi
 
     def update(self, request, *args, **kwargs):
         bug = self._get_bug_for_write()
-        serializer = BugWriteSerializer(bug, data=request.data, partial=kwargs.pop("partial", False))
+        from apps.tickets.models import SupportTicket
+        from apps.tickets.services.policy import can_edit_details
+        linked = SupportTicket.objects.filter(bug=bug, is_deleted=False).first()
+        if linked and not can_edit_details(linked, request.user):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only the assigned developer can edit details before rectification.")
+        serializer = BugWriteSerializer(bug, data=request.data, partial=kwargs.pop("partial", False), context={"request": request})
         serializer.is_valid(raise_exception=True)
+        if linked:
+            from apps.tickets.services.work_details_service import DETAIL_FIELDS, save_work_details
+            details = {key: value for key, value in serializer.validated_data.items() if key in DETAIL_FIELDS}
+            if details:
+                linked = save_work_details(ticket=linked, actor=request.user, details=details, request=request)
+                bug = linked.bug
         bug = update_bug(bug=bug, actor=request.user, request=request,
                          **serializer.validated_data)
         return ok(BugDetailSerializer(self._annotated(bug)).data, message="Bug updated successfully.")

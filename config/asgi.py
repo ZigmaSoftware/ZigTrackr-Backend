@@ -11,7 +11,7 @@ from django.urls import re_path
 
 django_application = get_asgi_application()
 
-from apps.tickets.consumers import TicketChatConsumer
+from apps.tickets.consumers import TicketChatConsumer, UserInboxConsumer
 
 application = ProtocolTypeRouter({
     "http": django_application,
@@ -19,5 +19,8 @@ application = ProtocolTypeRouter({
         re_path(r"^api/v1/tickets/public/track/ws/$", TicketChatConsumer.as_asgi()),
         re_path(r"^api/v1/tickets/(?P<unique_id>[0-9a-fA-F-]{36})/ws/$",
                 TicketChatConsumer.as_asgi()),
+        # Per-user nudge channel: unread counts for conversations the user
+        # does not currently have open.
+        re_path(r"^api/v1/tickets/inbox/ws/$", UserInboxConsumer.as_asgi()),
     ])),
 })

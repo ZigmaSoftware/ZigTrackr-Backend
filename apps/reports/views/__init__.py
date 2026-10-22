@@ -7,6 +7,7 @@ from .report_views import (
     ModuleReportView,
     OverdueReportView,
     PriorityReportView,
+    CompanyReportView,
     ProjectReportView,
     RootCauseReportView,
 )
@@ -14,5 +15,6 @@ from .report_views import (
 __all__ = [
     "AgingReportView", "BugExportView", "ClosureReportView", "DailyBugReportView",
     "EmployeeReportView", "ModuleReportView", "OverdueReportView",
-    "PriorityReportView", "ProjectReportView", "RootCauseReportView",
+    "PriorityReportView", "CompanyReportView",
+    "ProjectReportView", "RootCauseReportView",
 ]

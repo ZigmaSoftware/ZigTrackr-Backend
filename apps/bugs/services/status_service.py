@@ -7,8 +7,15 @@ from apps.bugs.constants import BugStatus
 from apps.bugs.models import BugStatusHistory
 from apps.bugs.services import workflow
 from apps.bugs.services.update_service import add_update
+from apps.notifications.models import NotificationType
+from apps.notifications.services import notify
 from common.services.audit import record_audit
 from common.utils.dates import local_now
+
+_STATUS_NOTIFICATION_TYPE = {
+    BugStatus.REOPENED: NotificationType.BUG_REOPENED,
+    BugStatus.TESTING: NotificationType.MOVED_TO_TESTING,
+}
 
 # Fields a transition is allowed to set on the bug as part of the move.
 TRANSITION_FIELDS = {
@@ -20,7 +27,8 @@ TRANSITION_FIELDS = {
 
 @transaction.atomic
 def change_status(*, bug, to_status, actor, remarks="", payload=None, request=None,
-                  write_update=True, allow_reopened_verification=False):
+                  write_update=True, allow_reopened_verification=False,
+                  notify_owner=True):
     """Validate and apply a status change, recording immutable history.
 
     The system-generated daily update is what makes a status change count as
@@ -42,6 +50,11 @@ def change_status(*, bug, to_status, actor, remarks="", payload=None, request=No
 
         linked_ticket = SupportTicket.objects.filter(bug=bug, is_deleted=False).first()
         if linked_ticket and linked_ticket.owner_id:
+            from rest_framework.exceptions import PermissionDenied
+            from apps.tickets.services.work_details_service import ensure_work_details
+            if linked_ticket.owner_id != actor.pk:
+                raise PermissionDenied("Only the assigned developer can start work.")
+            ensure_work_details(linked_ticket)
             ensure_owner_can_start(linked_ticket.owner_id, exclude_ticket_id=linked_ticket.pk)
 
     # Apply any reason fields that belong to this transition.
@@ -114,4 +127,23 @@ def change_status(*, bug, to_status, actor, remarks="", payload=None, request=No
             actor_email=ticket.reported_by_email if requester_action else "",
         )
 
+    # notify_owner=False when the caller already told the owner about the
+    # larger action. Assignment is the case that matters: assign_bug notifies,
+    # then transitions NEW -> ASSIGNED, which would otherwise fire a second
+    # alert for the same event.
+    if not notify_owner:
+        return bug
+    # Reopened and moved-to-testing have their own types because they mean
+    # something specific to the owner; anything else is a generic move.
+    notify(
+        recipients=[bug.owner_id],
+        notification_type=_STATUS_NOTIFICATION_TYPE.get(
+            to_status, NotificationType.TICKET_STATUS_CHANGED,
+        ),
+        title=f"{bug.bug_no} is now {BugStatus(to_status).label}",
+        message=bug.title,
+        bug=bug,
+        link=f"/bugs/detail/{bug.unique_id}",
+        actor=actor,
+    )
     return bug

@@ -1,9 +1,11 @@
 """Support ticket serializers."""
 
 from rest_framework import serializers
+from common.serializers.company import CompanyRelatedFieldsMixin
 
 from apps.accounts.serializers import UserLiteSerializer
-from apps.masters.models import PriorityMaster
+from apps.masters.models import CompanyMaster, DepartmentMaster, ModuleMaster, PriorityMaster, ProjectMaster, SeverityMaster, SiteMaster, SubmoduleMaster
+from apps.bugs.constants import Environment
 from apps.tickets.constants import MANUAL_TICKET_SOURCES, TicketSource, TicketStatus
 from apps.tickets.models import SupportTicket, TicketAttachment, TicketUpdate
 
@@ -73,6 +75,24 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
     reassign_block_reason = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
     chat_state = serializers.SerializerMethodField()
+    company = NamedRefSerializer(read_only=True)
+    can_edit_details = serializers.SerializerMethodField()
+    description_messages = serializers.SerializerMethodField()
+
+    def get_fields(self):
+        fields = super().get_fields()
+        if not self.context.get("include_description_messages", False):
+            fields.pop("description_messages", None)
+        return fields
+
+    def get_description_messages(self, obj):
+        from apps.tickets.services.conversation_service import request_messages
+
+        return request_messages(obj, full_content=True)
+
+    def get_can_edit_details(self, obj):
+        from apps.tickets.services.policy import can_edit_details
+        return can_edit_details(obj, getattr(self.context.get("request"), "user", None))
 
     class Meta:
         model = SupportTicket
@@ -89,7 +109,8 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
             "expected_closure_date", "effective_expected_closure_date",
             "age_days", "is_overdue", "overdue_days", "latest_update_at", "current_work_started_at",
             "created_at", "can_reassign", "can_delete", "reassign_block_reason",
-            "allowed_actions", "chat_state", "email_attachment_count",
+            "allowed_actions", "chat_state", "email_attachment_count", "company", "can_edit_details",
+            "description_messages",
         ]
         read_only_fields = fields
 
@@ -182,6 +203,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
             actions.extend(
                 target for target in targets
                 if target != TicketStatus.CLOSED
+                and (target != TicketStatus.IN_PROGRESS or obj.owner_id == user.pk)
                 and (target != TicketStatus.ASSIGNED or has_permission(user, "tickets.ticket.verify_close"))
             )
         return actions
@@ -199,6 +221,9 @@ class SupportTicketDetailSerializer(SupportTicketListSerializer):
     updates = TicketUpdateSerializer(many=True, read_only=True)
     request_messages = serializers.SerializerMethodField()
     active_work_conflict = serializers.SerializerMethodField()
+    severity = CodedRefSerializer(read_only=True)
+    department = NamedRefSerializer(read_only=True)
+    site = NamedRefSerializer(read_only=True)
 
     def get_active_work_conflict(self, obj):
         from apps.accounts.models import UserRole
@@ -231,6 +256,7 @@ class SupportTicketDetailSerializer(SupportTicketListSerializer):
             "submodule", "confirmed_by",
             "confirmed_at", "classification_reason",
             "ack_sent_at", "updates", "updated_at", "request_messages", "active_work_conflict",
+            "severity", "department", "site", "environment",
         ]
         read_only_fields = fields
 
@@ -296,6 +322,21 @@ class DeleteTicketSerializer(serializers.Serializer):
         return data
 
 
+class WorkDetailsSerializer(CompanyRelatedFieldsMixin, serializers.Serializer):
+    company = serializers.SlugRelatedField(slug_field="unique_id", queryset=CompanyMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    project = serializers.SlugRelatedField(slug_field="unique_id", queryset=ProjectMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    module = serializers.SlugRelatedField(slug_field="unique_id", queryset=ModuleMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    submodule = serializers.SlugRelatedField(slug_field="unique_id", queryset=SubmoduleMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    priority = serializers.SlugRelatedField(slug_field="unique_id", queryset=PriorityMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    severity = serializers.SlugRelatedField(slug_field="unique_id", queryset=SeverityMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    department = serializers.SlugRelatedField(slug_field="unique_id", queryset=DepartmentMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    site = serializers.SlugRelatedField(slug_field="unique_id", queryset=SiteMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
+    environment = serializers.ChoiceField(choices=Environment.choices, required=False, allow_blank=True)
+    expected_closure_date = serializers.DateField(required=False, allow_null=True)
+    title = serializers.CharField(max_length=255, required=False)
+    description = serializers.CharField(required=False, allow_blank=True)
+
+
 class WorkTransitionSerializer(serializers.Serializer):
     """The shared work flow: start, hold, rectify, close."""
 
@@ -306,6 +347,7 @@ class WorkTransitionSerializer(serializers.Serializer):
     remarks = serializers.CharField(required=False, allow_blank=True, default="")
     root_cause = serializers.CharField(required=False, allow_blank=True)
     resolution = serializers.CharField(required=False, allow_blank=True)
+    details = WorkDetailsSerializer(required=False)
 
 
 class TicketAttachmentSerializer(serializers.ModelSerializer):
@@ -323,7 +365,8 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
         return f"/api/v1/tickets/attachments/{obj.unique_id}/download/"
 
 
-class CreateTicketSerializer(serializers.Serializer):
+class CreateTicketSerializer(CompanyRelatedFieldsMixin, serializers.Serializer):
+    company = serializers.SlugRelatedField(slug_field="unique_id", queryset=CompanyMaster.objects.filter(is_active=True, is_deleted=False), required=False)
     ticket_type = serializers.ChoiceField(
         choices=["BUG", "SERVICE_REQUEST", "ACCESS_REQUEST"]
     )
@@ -360,30 +403,7 @@ class ReviewTicketSerializer(serializers.Serializer):
     ticket_type = serializers.ChoiceField(
         choices=["BUG", "SERVICE_REQUEST", "ACCESS_REQUEST"]
     )
-    title = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    description = serializers.CharField(required=False, allow_blank=True)
-    project = serializers.UUIDField(required=False, allow_null=True)
-    module = serializers.UUIDField(required=False, allow_null=True)
-    submodule = serializers.UUIDField(required=False, allow_null=True)
-    priority = serializers.UUIDField(required=False, allow_null=True)
-    severity = serializers.UUIDField(required=False, allow_null=True)
-    owner = serializers.UUIDField(required=False, allow_null=True)
-    environment = serializers.CharField(required=False, allow_blank=True)
-    expected_closure_date = serializers.DateField(required=False, allow_null=True)
-    remarks = serializers.CharField(required=False, allow_blank=True)
-
-    def validate(self, attrs):
-        if attrs.get("ticket_type") == "BUG":
-            missing = [
-                field for field in ("project", "priority", "severity")
-                if not attrs.get(field)
-            ]
-            if missing:
-                raise serializers.ValidationError({
-                    field: ["This field is required for bug review."]
-                    for field in missing
-                })
-        return attrs
+    owner = serializers.UUIDField()
 
 
 class ApprovalSerializer(serializers.Serializer):

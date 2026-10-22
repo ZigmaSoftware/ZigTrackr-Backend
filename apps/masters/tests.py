@@ -10,9 +10,11 @@ from apps.masters.models import ModuleMaster, ProjectMaster, SubmoduleMaster
 class MasterTestCase(TestCase):
     @classmethod
     def setUpTestData(cls):
+        from apps.masters.models import CompanyMaster
+        cls.company, _ = CompanyMaster.objects.get_or_create(code="MASTER_TEST", defaults={"name": "Master Test Company"})
         cls.admin = get_user_model().objects.create(username="masters-admin", is_superuser=True)
-        cls.project = ProjectMaster.objects.create(code="FIRST", name="First project")
-        cls.other_project = ProjectMaster.objects.create(code="SECOND", name="Second project")
+        cls.project = ProjectMaster.objects.create(company=cls.company, code="FIRST", name="First project")
+        cls.other_project = ProjectMaster.objects.create(company=cls.company, code="SECOND", name="Second project")
         cls.module = ModuleMaster.objects.create(project=cls.project, name="Accounts")
 
     def setUp(self):
@@ -139,6 +141,8 @@ class MasterCrudTests(MasterTestCase):
         ]
         for resource, model, extra in resources:
             with self.subTest(resource=resource):
+                if resource not in ("modules", "submodules"):
+                    extra = {**extra, "company": str(self.company.unique_id)}
                 response = self.client.post(
                     f"/api/v1/{resource}/", {"name": f"Check {resource}", **extra}, format="json",
                 )

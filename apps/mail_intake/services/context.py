@@ -20,4 +20,5 @@ def build_mail_context(mail):
         to_emails=tuple(mail.to_emails or ()),
         has_attachments=mail.attachments.exists() if mail.pk else False,
         mail_unique_id=str(mail.unique_id),
+        company_unique_id=str(mail.company.unique_id) if mail.company_id else "",
     )

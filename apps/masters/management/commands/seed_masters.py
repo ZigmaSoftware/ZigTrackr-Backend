@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from apps.masters.models import (
+    CompanyMaster,
     DepartmentMaster,
     PriorityMaster,
     RootCauseTypeMaster,
@@ -55,6 +56,7 @@ class Command(BaseCommand):
     help = "Seed priority, severity, root cause type and sample org masters."
 
     def add_arguments(self, parser):
+        parser.add_argument("--company", default="ZIGMA")
         parser.add_argument(
             "--skip-org", action="store_true",
             help="Skip sample departments and sites.",
@@ -62,9 +64,10 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        company, _ = CompanyMaster.objects.get_or_create(code=options["company"].upper(), defaults={"name": options["company"].upper()})
         for code, name, rank, color, sla in PRIORITIES:
             PriorityMaster.objects.update_or_create(
-                code=code,
+                company=company, code=code,
                 defaults={"name": name, "rank": rank, "color": color,
                           "sla_days": sla, "is_system": True, "is_active": True},
             )
@@ -72,7 +75,7 @@ class Command(BaseCommand):
 
         for code, name, rank, color in SEVERITIES:
             SeverityMaster.objects.update_or_create(
-                code=code,
+                company=company, code=code,
                 defaults={"name": name, "rank": rank, "color": color,
                           "is_system": True, "is_active": True},
             )
@@ -80,7 +83,7 @@ class Command(BaseCommand):
 
         for order, (code, name) in enumerate(ROOT_CAUSE_TYPES, start=1):
             RootCauseTypeMaster.objects.update_or_create(
-                code=code,
+                company=company, code=code,
                 defaults={"name": name, "rank": order * 10,
                           "is_system": True, "is_active": True},
             )
@@ -88,9 +91,9 @@ class Command(BaseCommand):
 
         if not options["skip_org"]:
             for name in DEPARTMENTS:
-                DepartmentMaster.objects.get_or_create(name=name, defaults={"is_active": True})
+                DepartmentMaster.objects.get_or_create(company=company, name=name, defaults={"is_active": True})
             for name in SITES:
-                SiteMaster.objects.get_or_create(name=name, defaults={"is_active": True})
+                SiteMaster.objects.get_or_create(company=company, name=name, defaults={"is_active": True})
             self.stdout.write(f"  Departments/Sites: {len(DEPARTMENTS)}/{len(SITES)}")
 
         self.stdout.write(self.style.SUCCESS("Masters seeded."))

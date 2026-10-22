@@ -14,6 +14,10 @@ def issue_tokens(user, session_id=None):
     without a second round trip. They are a convenience only -- every
     authorization decision is re-checked server-side against the database.
     """
+    from common.permissions.company import can_access_company
+    from rest_framework.exceptions import AuthenticationFailed
+    if not can_access_company(user, user):
+        raise AuthenticationFailed("Your company access is inactive. Contact Super Admin.")
     session = validate_session({"sid": session_id}, user) if session_id else create_session(user)
     refresh = RefreshToken.for_user(user)
     refresh["sid"] = session.session_key
@@ -82,6 +86,7 @@ def build_session_payload(user, token=None):
         "team": user.team.name if user.team_id else None,
         "site": user.site.name if user.site_id else None,
         "is_superuser": user.is_superuser,
+        "company": {"id": str(user.company.unique_id), "name": user.company.name} if user.company_id else None,
         "must_change_password": user.must_change_password,
         "roles": roles,
         "permissions": sorted(resolve_permission_codes(user)),

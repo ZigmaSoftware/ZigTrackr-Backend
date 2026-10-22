@@ -27,6 +27,7 @@ class UUIDLookupFilter(django_filters.CharFilter):
 
 
 class TicketFilter(django_filters.FilterSet):
+    company = UUIDLookupFilter(field_name="company__unique_id")
     submodule = django_filters.CharFilter(method="filter_submodule")
     search = django_filters.CharFilter(method="filter_search")
     ticket_type = django_filters.MultipleChoiceFilter(choices=TicketType.choices)

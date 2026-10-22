@@ -11,6 +11,7 @@ from common.models import CodedMaster
 
 
 class PriorityMaster(CodedMaster):
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="priorities")
     # Default offset applied to reported_date to suggest an expected closure
     # date, so spec 12's overdue logic has data to work with from day one.
     sla_days = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -19,7 +20,7 @@ class PriorityMaster(CodedMaster):
         db_table = "priority_master"
         ordering = ["rank", "name"]
         constraints = [
-            models.UniqueConstraint(fields=["code"], name="uq_priority_master_code"),
+            models.UniqueConstraint(fields=["company", "code"], name="uq_priority_company_code"),
         ]
         indexes = [
             models.Index(fields=["is_active", "rank"], name="idx_priority_active_rank"),
@@ -27,11 +28,12 @@ class PriorityMaster(CodedMaster):
 
 
 class SeverityMaster(CodedMaster):
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="severities")
     class Meta:
         db_table = "severity_master"
         ordering = ["rank", "name"]
         constraints = [
-            models.UniqueConstraint(fields=["code"], name="uq_severity_master_code"),
+            models.UniqueConstraint(fields=["company", "code"], name="uq_severity_company_code"),
         ]
         indexes = [
             models.Index(fields=["is_active", "rank"], name="idx_severity_active_rank"),
@@ -39,11 +41,12 @@ class SeverityMaster(CodedMaster):
 
 
 class RootCauseTypeMaster(CodedMaster):
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="root_cause_types")
     class Meta:
         db_table = "root_cause_type_master"
         ordering = ["rank", "name"]
         constraints = [
-            models.UniqueConstraint(fields=["code"], name="uq_root_cause_type_code"),
+            models.UniqueConstraint(fields=["company", "code"], name="uq_rct_company_code"),
         ]
         indexes = [
             models.Index(fields=["is_active"], name="idx_rct_active"),

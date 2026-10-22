@@ -32,6 +32,7 @@ class MailContext:
     has_attachments: bool = False
     # Correlation only -- deliberately not a model reference.
     mail_unique_id: str = ""
+    company_unique_id: str = ""
 
 
 @dataclass(frozen=True)

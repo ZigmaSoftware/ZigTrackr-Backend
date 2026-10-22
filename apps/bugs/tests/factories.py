@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from apps.bugs.constants import BugStatus
 from apps.bugs.models import Bug
 from apps.masters.models import (
+    CompanyMaster,
     ModuleMaster,
     PriorityMaster,
     ProjectMaster,
@@ -15,9 +16,13 @@ from apps.masters.models import (
 )
 
 
+def make_company():
+    return CompanyMaster.objects.get_or_create(code="ZIGMA", defaults={"name": "Zigma Global Environ Solutions"})[0]
+
+
 def make_user(username="tester", **kwargs):
     User = get_user_model()
-    defaults = {"full_name": username.title(), "email": f"{username}@example.com"}
+    defaults = {"full_name": username.title(), "email": f"{username}@example.com", "company": make_company()}
     defaults.update(kwargs)
     user = User.objects.create(username=username, **defaults)
     user.set_password("pw-not-used")
@@ -26,14 +31,15 @@ def make_user(username="tester", **kwargs):
 
 
 def make_team(name="Team A"):
-    return TeamMaster.objects.create(name=name)
+    return TeamMaster.objects.create(name=name, company=make_company())
 
 
 def make_masters():
-    project = ProjectMaster.objects.create(code="TST", name="Test Project")
+    company = make_company()
+    project = ProjectMaster.objects.create(company=company, code="TST", name="Test Project")
     module = ModuleMaster.objects.create(project=project, name="Sales")
-    priority = PriorityMaster.objects.create(code="HIGH", name="High", rank=20)
-    severity = SeverityMaster.objects.create(code="MAJOR", name="Major", rank=30)
+    priority = PriorityMaster.objects.create(company=company, code="HIGH", name="High", rank=20)
+    severity = SeverityMaster.objects.create(company=company, code="MAJOR", name="Major", rank=30)
     return project, module, priority, severity
 
 
@@ -41,6 +47,7 @@ def make_bug(*, bug_no, reporter, project, priority, severity, module=None,
              status=BugStatus.NEW, reported_date=None, expected_closure_date=None,
              closed_date=None, owner=None, latest_update_date=None, **kwargs):
     return Bug.objects.create(
+        company=kwargs.pop("company", project.company),
         bug_no=bug_no,
         project=project,
         module=module,

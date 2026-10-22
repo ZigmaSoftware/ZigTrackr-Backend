@@ -17,7 +17,7 @@ class SubmodulePermissionTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.roles = seed_rbac()
-        cls.admin = make_user("bundle_admin")
+        cls.admin = make_user("bundle_admin", is_superuser=True)
         cls.developer = make_user("bundle_developer")
         cls.manager = make_user("bundle_manager")
         for user, code in ((cls.admin, "ADMIN"), (cls.developer, "DEVELOPER"), (cls.manager, "MANAGEMENT")):
@@ -45,7 +45,7 @@ class SubmodulePermissionTests(TestCase):
         self.assertEqual(user["name"], "User Management")
         self.assertEqual(set(user["permissions"]), {"admin.user.view", "admin.user.add", "admin.user.edit", "admin.user.delete"})
         protected = next(group for group in groups if group["key"] == "administration.permission")
-        self.assertEqual(protected["protected_roles"], ["ADMIN"])
+        self.assertEqual(protected["protected_roles"], [])
 
     def test_ticket_creation_and_management_show_actual_sidebar_submodules(self):
         modules = {m["module"]: m for m in self.client.get("/api/v1/permissions/matrix/").json()["data"]["modules"]}
@@ -176,13 +176,13 @@ class SubmodulePermissionTests(TestCase):
                 self.assertEqual(response.status_code, 400, response.content)
                 self.assertEqual(self.granted("DEVELOPER"), before)
 
-    def test_admin_cannot_disable_protected_submodules(self):
-        before = self.granted("ADMIN")
+    def test_super_admin_can_disable_admin_submodules(self):
         for key in ("administration.role", "administration.permission"):
             with self.subTest(key=key):
                 response = self.change("ADMIN", [{"key": key, "enabled": False}, {"key": "administration.user", "enabled": False}])
-                self.assertEqual(response.status_code, 400, response.content)
-                self.assertEqual(self.granted("ADMIN"), before)
+                self.assertEqual(response.status_code, 200, response.content)
+                codes = self.granted("ADMIN")
+                self.assertFalse({f"admin.{key.rsplit('.', 1)[-1]}.view", f"admin.{key.rsplit('.', 1)[-1]}.manage"} & codes)
 
     def test_read_only_matrix_permission_does_not_allow_writes(self):
         role = self.roles["MANAGEMENT"]
@@ -199,10 +199,11 @@ class SubmodulePermissionTests(TestCase):
                 self.assertIn(self.client.get("/api/v1/permissions/matrix/").status_code, (401, 403))
                 self.assertIn(self.change("DEVELOPER", [{"key": "administration.user", "enabled": True}]).status_code, (401, 403))
 
-    def test_legacy_action_payload_keeps_admin_guard_and_replace_semantics(self):
+    def test_super_admin_legacy_payload_keeps_replace_semantics(self):
         path = f"/api/v1/roles/{self.roles['ADMIN'].unique_id}/permissions/"
         response = self.client.put(path, {"permissions": []}, format="json")
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.granted("ADMIN"), set())
         response = self.client.put(path, {"permissions": sorted(PROTECTED_ADMIN_PERMISSIONS)}, format="json")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(self.granted("ADMIN"), set(PROTECTED_ADMIN_PERMISSIONS))

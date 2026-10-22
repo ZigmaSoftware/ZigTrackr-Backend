@@ -19,18 +19,16 @@ def resolve_permission_codes(user):
     if cached is not None:
         return cached
 
-    from apps.accounts.models import RolePermission
+    from apps.accounts.models import Role
+    from apps.accounts.services.company_roles import role_settings
 
-    codes = set(
-        RolePermission.objects.filter(
-            role__user_roles__user=user,
-            role__user_roles__is_active=True,
-            role__is_active=True,
-            role__is_deleted=False,
-            permission__is_active=True,
-            permission__is_deleted=False,
-        ).values_list("permission__codename", flat=True)
-    )
+    roles = list(Role.objects.filter(user_roles__user=user, user_roles__is_active=True,
+                                    is_active=True, is_deleted=False).distinct())
+    grants, overrides = role_settings(roles, getattr(user, "company", None))
+    codes = set()
+    for role in roles:
+        if role.pk not in overrides or overrides[role.pk].is_active:
+            codes.update(grants[role.pk])
     setattr(user, _CACHE_ATTR, codes)
     return codes
 
@@ -60,3 +58,39 @@ def RequirePermission(*codenames):
 
     _RequirePermission.__name__ = f"RequirePermission_{'_'.join(codenames)}"
     return _RequirePermission
+
+
+def user_ids_with_permission(*codenames):
+    """Primary keys of active users holding ANY of these codenames.
+
+    The inverse of has_permission, for fan-out: broadcasting needs the set of
+    recipients up front rather than a yes/no for one user. Superusers are
+    included because has_permission short-circuits to True for them.
+    """
+    from apps.accounts.models import User
+    from apps.accounts.models import Role
+    from apps.accounts.services.company_roles import role_settings
+    from common.permissions.company import can_access_company
+
+    users = list(User.objects.filter(is_active=True, is_deleted=False).select_related("company")
+                 .prefetch_related("user_roles__role"))
+    roles = list(Role.objects.filter(is_active=True, is_deleted=False))
+    company_grants = {}
+    result = set()
+    for user in users:
+        if user.is_superuser:
+            result.add(user.pk)
+            continue
+        if not can_access_company(user, user):
+            continue
+        if user.company_id not in company_grants:
+            company_grants[user.company_id] = role_settings(roles, user.company)
+        grants, overrides = company_grants[user.company_id]
+        for assignment in user.user_roles.all():
+            override = overrides.get(assignment.role_id)
+            if (assignment.is_active and assignment.role.is_active and not assignment.role.is_deleted
+                    and (not override or override.is_active)
+                    and set(codenames).intersection(grants.get(assignment.role_id, set()))):
+                result.add(user.pk)
+                break
+    return result

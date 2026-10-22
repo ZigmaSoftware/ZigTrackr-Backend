@@ -32,6 +32,8 @@ class User(AbstractUser):
     full_name = models.CharField(max_length=150, blank=True, default="")
     phone = models.CharField(max_length=20, blank=True, default="")
     designation = models.CharField(max_length=100, blank=True, default="")
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="users")
+    super_admin_slot = models.PositiveSmallIntegerField(null=True, blank=True, unique=True, editable=False)
 
     department = models.ForeignKey(
         "masters.DepartmentMaster", on_delete=models.PROTECT, null=True, blank=True,
@@ -61,9 +63,14 @@ class User(AbstractUser):
         db_table = "users"
         ordering = ["full_name", "username"]
         constraints = [
-            models.UniqueConstraint(fields=["employee_code"], name="uq_users_employee_code"),
+            models.CheckConstraint(condition=(
+                models.Q(is_superuser=False, super_admin_slot__isnull=True)
+                | models.Q(is_superuser=True, super_admin_slot=1, super_admin_slot__isnull=False)
+            ), name="ck_users_super_admin_slot"),
+            models.UniqueConstraint(fields=["company", "employee_code"], name="uq_users_company_employee"),
         ]
         indexes = [
+            models.Index(fields=["company", "is_active", "is_deleted"], name="idx_users_company_active"),
             models.Index(fields=["is_active", "is_deleted"], name="idx_users_active"),
             models.Index(fields=["team", "is_active"], name="idx_users_team_active"),
             models.Index(fields=["department"], name="idx_users_department"),
@@ -73,6 +80,9 @@ class User(AbstractUser):
         return self.full_name or self.username
 
     def save(self, *args, **kwargs):
+        self.super_admin_slot = 1 if self.is_superuser else None
+        if kwargs.get("update_fields") is not None and "is_superuser" in kwargs["update_fields"]:
+            kwargs["update_fields"] = {*kwargs["update_fields"], "super_admin_slot"}
         if not self.full_name:
             self.full_name = f"{self.first_name} {self.last_name}".strip() or self.username
         super().save(*args, **kwargs)

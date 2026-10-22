@@ -1,6 +1,6 @@
 """Test helpers for tickets."""
 
-from apps.bugs.tests.factories import make_masters, make_user
+from apps.bugs.tests.factories import make_company, make_masters, make_user
 from apps.tickets.constants import ClassificationMethod, TicketSource, TicketStatus, TicketType
 from apps.tickets.models import SupportTicket
 from apps.tickets.services.ticket_number import generate_ref_no
@@ -17,6 +17,7 @@ def make_ticket(*, reporter=None, ticket_type=TicketType.UNKNOWN, needs_review=T
         reporter = get_mail_intake_user()
 
     fields = {
+        "company": getattr(reporter, "company", None) or make_company(),
         # Matches intake: a reference now, a TKT number only once routed. Pass
         # ticket_no=... explicitly to model an already-assigned ticket.
         "ref_no": generate_ref_no(local_today()),

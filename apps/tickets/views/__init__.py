@@ -6,8 +6,9 @@ from .attachment_views import (
 )
 from .public_views import (
     PublicTicketLookupView, PublicTrackActivityView, PublicTrackChatView, PublicTrackChatActionView,
-    PublicTrackChatReceiptView,
-    PublicTrackReopenView, PublicTrackTicketView, PublicTrackVerifyView,
+    PublicTrackChatReceiptView, PublicTrackCloseView, PublicTrackSignoutView,
+    PublicTrackReopenView, PublicTrackTicketView,
+    PublicTrackListView, PublicTrackRequestOtpView, PublicTrackVerifyOtpView,
 )
 from .ticket_views import SupportTicketViewSet
 
@@ -17,9 +18,13 @@ __all__ = [
     "PublicTrackChatView",
     "PublicTrackChatActionView",
     "PublicTrackChatReceiptView",
+    "PublicTrackCloseView",
+    "PublicTrackSignoutView",
     "PublicTrackReopenView",
     "PublicTrackTicketView",
-    "PublicTrackVerifyView",
+    "PublicTrackListView",
+    "PublicTrackRequestOtpView",
+    "PublicTrackVerifyOtpView",
     "SupportTicketViewSet",
     "TicketAttachmentDeleteView",
     "TicketAttachmentDownloadView",

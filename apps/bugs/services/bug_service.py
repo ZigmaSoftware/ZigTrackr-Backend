@@ -10,6 +10,7 @@ from apps.bugs.models import Bug, BugStatusHistory
 from apps.bugs.services.bug_number import generate_bug_no
 from common.services.audit import record_audit, record_field_changes
 from common.utils.dates import local_today
+from common.permissions.company import validate_company_relations
 
 # Field changes worth an individual audit row (spec 41).
 AUDITED_FIELDS = {
@@ -37,6 +38,10 @@ def suggest_expected_closure(priority, reported_date):
 def create_bug(*, actor, request=None, **fields):
     """Create a bug with a generated number and an opening history row."""
     reported_date = fields.pop("reported_date", None) or local_today()
+    fields.setdefault("company", getattr(fields.get("project"), "company", None) or getattr(actor, "company", None))
+    validate_company_relations(getattr(fields["company"], "pk", None), {
+        key: fields.get(key) for key in ("project", "module", "submodule", "priority", "severity", "department", "site", "root_cause_type")
+    })
 
     bug = Bug(
         reported_date=reported_date,
@@ -72,6 +77,19 @@ def update_bug(*, bug, actor, request=None, **fields):
     """
     fields.pop("status", None)
     fields.pop("bug_no", None)
+    if request is not None:
+        from apps.tickets.models import SupportTicket
+        from apps.tickets.services.policy import can_edit_details
+        from apps.tickets.services.work_details_service import DETAIL_FIELDS
+        linked = SupportTicket.objects.filter(bug=bug, is_deleted=False).first()
+        if linked and set(fields).intersection(DETAIL_FIELDS) and not can_edit_details(linked, actor):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only the assigned developer can edit details before rectification.")
+    if "company" in fields and getattr(fields["company"], "pk", None) != bug.company_id:
+        from rest_framework.exceptions import ValidationError
+        raise ValidationError({"company": ["A bug cannot be transferred between companies."]})
+    validate_company_relations(bug.company_id, {key: value for key, value in fields.items()
+        if key in ("project", "module", "submodule", "priority", "severity", "department", "site", "root_cause_type")})
 
     changes = {}
     for field, value in fields.items():

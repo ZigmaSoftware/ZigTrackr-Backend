@@ -57,7 +57,7 @@ def extract_ticket_no(subject):
     return match.group(0).upper() if match else None
 
 
-def _tickets_for_message_ids(message_ids):
+def _tickets_for_message_ids(message_ids, company_id):
     """Every live ticket reachable from these message ids, by either route."""
     from apps.tickets.models import SupportTicket
 
@@ -67,11 +67,11 @@ def _tickets_for_message_ids(message_ids):
 
     # Route 1: the reply points at our acknowledgement.
     by_ack = SupportTicket.objects.filter(
-        ack_message_id__in=ids, is_deleted=False
+        ack_message_id__in=ids, is_deleted=False, company_id=company_id
     )
     # Route 2: the reply points at a message we already stored.
     by_mail = SupportTicket.objects.filter(
-        mails__message_id__in=ids, is_deleted=False
+        mails__message_id__in=ids, is_deleted=False, company_id=company_id
     )
 
     seen = {}
@@ -83,6 +83,8 @@ def _tickets_for_message_ids(message_ids):
 def find_thread_ticket(mail):
     """Identify the ticket this message continues, per spec 12's order."""
     from apps.tickets.models import SupportTicket
+    if not mail.company_id:
+        return ThreadMatch()
 
     # 1. An explicit ticket number in the subject. The most robust signal,
     #    because it survives a user composing a fresh message that merely
@@ -92,6 +94,7 @@ def find_thread_ticket(mail):
         ticket = SupportTicket.objects.filter(
             Q(ticket_no__iexact=ticket_no) | Q(ref_no__iexact=ticket_no),
             is_deleted=False,
+            company_id=mail.company_id,
         ).first()
         if ticket is not None:
             return ThreadMatch(ticket, METHOD_TICKET_NO, True, f"Subject cites {ticket_no}.")
@@ -99,7 +102,7 @@ def find_thread_ticket(mail):
 
     # 2. In-Reply-To, against both our acknowledgement and stored mail.
     if mail.in_reply_to:
-        tickets = _tickets_for_message_ids([mail.in_reply_to])
+        tickets = _tickets_for_message_ids([mail.in_reply_to], mail.company_id)
         if len(tickets) == 1:
             return ThreadMatch(
                 tickets[0], METHOD_IN_REPLY_TO, True, "In-Reply-To matches a known message."
@@ -113,7 +116,7 @@ def find_thread_ticket(mail):
     # 3. References. Only the tail matters -- those are the immediate parents.
     references = parse_message_ids(mail.references_header, limit=MAX_REFERENCE_TOKENS)
     if references:
-        tickets = _tickets_for_message_ids(references)
+        tickets = _tickets_for_message_ids(references, mail.company_id)
         if len(tickets) == 1:
             return ThreadMatch(
                 tickets[0], METHOD_REFERENCES, True, "References matches a known message."
@@ -130,13 +133,14 @@ def find_thread_ticket(mail):
             MailIntake.objects.filter(
                 provider_thread_id=mail.provider_thread_id,
                 linked_ticket__isnull=False,
+                company_id=mail.company_id,
             )
             .exclude(pk=mail.pk)
             .values_list("linked_ticket_id", flat=True)
         )
         if len(ticket_ids) == 1:
             ticket = SupportTicket.objects.filter(
-                pk=ticket_ids.pop(), is_deleted=False
+                pk=ticket_ids.pop(), is_deleted=False, company_id=mail.company_id
             ).first()
             if ticket is not None:
                 return ThreadMatch(
@@ -162,6 +166,9 @@ def apply_thread_update(*, mail, ticket, actor=None, request=None):
     from apps.tickets.services.ticket_service import add_ticket_update
     from common.services.audit import record_audit
 
+    if not mail.company_id or mail.company_id != ticket.company_id:
+        from common.exceptions.domain import WorkflowValidationError
+        raise WorkflowValidationError({"detail": ["Cannot link messages across companies."]})
     body = clean_readable_body(mail.body_text, mail.body_html)
     excerpt = body[:4000] or "(no body)"
     note = f"Email reply from {mail.from_email}"

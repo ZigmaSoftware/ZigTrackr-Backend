@@ -1,8 +1,10 @@
 """Master serializers."""
 
 from rest_framework import serializers
+from common.serializers.company import CompanyRelatedFieldsMixin
 
 from apps.masters.models import (
+    CompanyMaster,
     DepartmentMaster,
     ModuleMaster,
     PriorityMaster,
@@ -54,11 +56,44 @@ class UniqueNameMixin:
         return attrs
 
 
-class BaseMasterSerializer(UniqueNameMixin, serializers.ModelSerializer):
+class BaseMasterSerializer(CompanyRelatedFieldsMixin, UniqueNameMixin, serializers.ModelSerializer):
     id = serializers.UUIDField(source="unique_id", read_only=True)
 
 
-class CodedMasterSerializer(BaseMasterSerializer):
+class CompanySerializer(BaseMasterSerializer):
+    class Meta:
+        model = CompanyMaster
+        fields = ["id", "code", "name", "support_email", "description", "is_active", *AUDIT_READ_ONLY[1:]]
+        read_only_fields = AUDIT_READ_ONLY
+
+    def validate_code(self, value):
+        return value.strip().upper()
+
+    def validate_support_email(self, value):
+        return value.strip().lower() if value else None
+
+
+class CompanyScopedSerializer(BaseMasterSerializer):
+    scope_field = "company"
+    company = serializers.SlugRelatedField(
+        slug_field="unique_id", queryset=CompanyMaster.objects.filter(is_active=True, is_deleted=False),
+        write_only=True, required=True,
+    )
+    company_id = serializers.UUIDField(source="company.unique_id", read_only=True, default=None)
+    company_name = serializers.CharField(source="company.name", read_only=True, default="")
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        company = attrs.get("company")
+        if self.instance and company and company.pk != self.instance.company_id:
+            raise serializers.ValidationError({"company": ["Existing masters cannot be moved to another company."]})
+        from common.permissions.company import validate_company_relations
+        parent = company or getattr(self.instance, "company", None)
+        validate_company_relations(getattr(parent, "pk", None), {key: attrs[key] for key in ("team_lead", "project_lead") if key in attrs})
+        return attrs
+
+
+class CodedMasterSerializer(CompanyScopedSerializer):
     """Shared shape for priority/severity/root-cause-type.
 
     `code` is immutable on system rows: application logic filters on it, so
@@ -77,7 +112,7 @@ class CodedMasterSerializer(BaseMasterSerializer):
 class PrioritySerializer(CodedMasterSerializer):
     class Meta:
         model = PriorityMaster
-        fields = ["id", "code", "name", "description", "rank", "color",
+        fields = ["id", "company", "company_id", "company_name", "code", "name", "description", "rank", "color",
                   "sla_days", "is_system", "is_active", *AUDIT_READ_ONLY[1:]]
         read_only_fields = [*AUDIT_READ_ONLY, "is_system"]
 
@@ -85,7 +120,7 @@ class PrioritySerializer(CodedMasterSerializer):
 class SeveritySerializer(CodedMasterSerializer):
     class Meta:
         model = SeverityMaster
-        fields = ["id", "code", "name", "description", "rank", "color",
+        fields = ["id", "company", "company_id", "company_name", "code", "name", "description", "rank", "color",
                   "is_system", "is_active", *AUDIT_READ_ONLY[1:]]
         read_only_fields = [*AUDIT_READ_ONLY, "is_system"]
 
@@ -93,51 +128,53 @@ class SeveritySerializer(CodedMasterSerializer):
 class RootCauseTypeSerializer(CodedMasterSerializer):
     class Meta:
         model = RootCauseTypeMaster
-        fields = ["id", "code", "name", "description", "rank", "color",
+        fields = ["id", "company", "company_id", "company_name", "code", "name", "description", "rank", "color",
                   "is_system", "is_active", *AUDIT_READ_ONLY[1:]]
         read_only_fields = [*AUDIT_READ_ONLY, "is_system"]
 
 
-class DepartmentSerializer(BaseMasterSerializer):
+class DepartmentSerializer(CompanyScopedSerializer):
     class Meta:
         model = DepartmentMaster
-        fields = ["id", "code", "name", "description", "is_active", *AUDIT_READ_ONLY[1:]]
+        fields = ["id", "company", "company_id", "company_name", "code", "name", "description", "is_active", *AUDIT_READ_ONLY[1:]]
         read_only_fields = AUDIT_READ_ONLY
 
 
-class SiteSerializer(BaseMasterSerializer):
+class SiteSerializer(CompanyScopedSerializer):
     class Meta:
         model = SiteMaster
-        fields = ["id", "code", "name", "description", "address", "is_active",
+        fields = ["id", "company", "company_id", "company_name", "code", "name", "description", "address", "is_active",
                   *AUDIT_READ_ONLY[1:]]
         read_only_fields = AUDIT_READ_ONLY
 
 
-class TeamSerializer(BaseMasterSerializer):
+class TeamSerializer(CompanyScopedSerializer):
     team_lead_name = serializers.CharField(source="team_lead.display_name",
                                            read_only=True, default=None)
 
     class Meta:
         model = TeamMaster
-        fields = ["id", "code", "name", "description", "team_lead", "team_lead_name",
+        fields = ["id", "company", "company_id", "company_name", "code", "name", "description", "team_lead", "team_lead_name",
                   "is_active", *AUDIT_READ_ONLY[1:]]
         read_only_fields = AUDIT_READ_ONLY
 
 
-class ProjectSerializer(BaseMasterSerializer):
+class ProjectSerializer(CompanyScopedSerializer):
     project_lead_name = serializers.CharField(source="project_lead.display_name",
                                               read_only=True, default=None)
     module_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = ProjectMaster
-        fields = ["id", "code", "name", "description", "project_lead",
+        fields = ["id", "company", "company_id", "company_name", "code", "name", "description", "project_lead",
                   "project_lead_name", "start_date", "module_count", "is_active",
                   *AUDIT_READ_ONLY[1:]]
         read_only_fields = AUDIT_READ_ONLY
 
 
 class ModuleSerializer(BaseMasterSerializer):
+    company_id = serializers.UUIDField(source="project.company.unique_id", read_only=True, default=None)
+    company_name = serializers.CharField(source="project.company.name", read_only=True, default="")
     scope_field = "project"
     project = serializers.SlugRelatedField(
         slug_field="unique_id", write_only=True,
@@ -146,15 +183,23 @@ class ModuleSerializer(BaseMasterSerializer):
     project_id = serializers.UUIDField(source="project.unique_id", read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance and "project" in attrs and attrs["project"].pk != self.instance.project_id:
+            raise serializers.ValidationError({"project": ["Create a new module to use a different project."]})
+        return attrs
+
     class Meta:
         model = ModuleMaster
-        fields = ["id", "code", "name", "description", "project", "project_id",
+        fields = ["id", "company_id", "company_name", "code", "name", "description", "project", "project_id",
                   "project_name", "is_active", *AUDIT_READ_ONLY[1:]]
         read_only_fields = AUDIT_READ_ONLY
         extra_kwargs = {"project": {"write_only": True}}
 
 
 class SubmoduleSerializer(BaseMasterSerializer):
+    company_id = serializers.UUIDField(source="module.project.company.unique_id", read_only=True, default=None)
+    company_name = serializers.CharField(source="module.project.company.name", read_only=True, default="")
     scope_field = "module"
     module = serializers.SlugRelatedField(
         slug_field="unique_id", write_only=True,
@@ -163,10 +208,17 @@ class SubmoduleSerializer(BaseMasterSerializer):
     module_id = serializers.UUIDField(source="module.unique_id", read_only=True)
     module_name = serializers.CharField(source="module.name", read_only=True)
     project_name = serializers.CharField(source="module.project.name", read_only=True)
+    project_id = serializers.UUIDField(source="module.project.unique_id", read_only=True)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance and "module" in attrs and attrs["module"].pk != self.instance.module_id:
+            raise serializers.ValidationError({"module": ["Create a new submodule to use a different module."]})
+        return attrs
 
     class Meta:
         model = SubmoduleMaster
-        fields = ["id", "code", "name", "description", "module", "module_id",
-                  "module_name", "project_name", "is_active", *AUDIT_READ_ONLY[1:]]
+        fields = ["id", "company_id", "company_name", "code", "name", "description", "module", "module_id",
+                  "module_name", "project_id", "project_name", "is_active", *AUDIT_READ_ONLY[1:]]
         read_only_fields = AUDIT_READ_ONLY
         extra_kwargs = {"module": {"write_only": True}}

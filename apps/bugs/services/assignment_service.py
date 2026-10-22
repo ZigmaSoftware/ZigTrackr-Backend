@@ -4,10 +4,13 @@ from django.db import transaction
 
 from apps.audit.models import AuditAction
 from apps.bugs.constants import BugStatus
+from apps.notifications.models import NotificationType
+from apps.notifications.services import notify
 from apps.bugs.models import BugAssignmentHistory
 from apps.bugs.services.status_service import change_status
 from common.services.audit import record_audit
 from common.utils.dates import local_now
+from common.permissions.company import validate_company_relations
 
 
 @transaction.atomic
@@ -20,6 +23,10 @@ def assign_bug(*, bug, new_owner, actor, remarks="", expected_closure_date=None,
     express one business action invites states where a bug has an owner but
     still reads as New.
     """
+    validate_company_relations(bug.company_id, {"owner": new_owner})
+    if bug.status in (BugStatus.TESTING, BugStatus.RESOLVED, BugStatus.CLOSED, BugStatus.REJECTED):
+        from common.exceptions.domain import WorkflowValidationError
+        raise WorkflowValidationError({"owner": ["Return the issue to development before changing its assignee."]})
     previous_owner = bug.owner
 
     bug.owner = new_owner
@@ -54,7 +61,7 @@ def assign_bug(*, bug, new_owner, actor, remarks="", expected_closure_date=None,
     if bug.status in (BugStatus.NEW, BugStatus.REOPENED):
         change_status(bug=bug, to_status=BugStatus.ASSIGNED, actor=actor,
                       remarks=remarks or f"Assigned to {new_owner.display_name}.",
-                      request=request)
+                      request=request, notify_owner=False)
 
     from apps.tickets.models import SupportTicket
     from apps.tickets.services.activity_service import record_activity
@@ -79,4 +86,13 @@ def assign_bug(*, bug, new_owner, actor, remarks="", expected_closure_date=None,
             actor=actor,
         )
 
+    notify(
+        recipients=[new_owner],
+        notification_type=NotificationType.BUG_ASSIGNED,
+        title=f"{bug.bug_no} assigned to you",
+        message=bug.title,
+        bug=bug,
+        link=f"/bugs/detail/{bug.unique_id}",
+        actor=actor,
+    )
     return bug

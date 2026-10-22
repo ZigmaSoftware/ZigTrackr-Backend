@@ -16,6 +16,7 @@ from apps.mail_intake.constants import MailErrorCode, MailProcessingStatus
 class MailIntake(models.Model):
     id = models.BigAutoField(primary_key=True)
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="mail_messages")
 
     # ---- PROVIDER IDENTIFIERS ----
     provider_message_id = models.CharField(max_length=255, blank=True, default="")
@@ -106,6 +107,7 @@ class MailIntake(models.Model):
             ),
         ]
         indexes = [
+            models.Index(fields=["company", "processing_status"], name="idx_mail_company_state"),
             models.Index(
                 fields=["processing_status", "received_at"],
                 name="idx_mail_status_recvd",

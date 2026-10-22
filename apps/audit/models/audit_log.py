@@ -56,6 +56,10 @@ class AuditAction(models.TextChoices):
     MODULE_MAPPING_CHANGED = "MODULE_MAPPING_CHANGED", "Module Mapping Changed"
     TICKET_ASSIGNED = "TICKET_ASSIGNED", "Ticket Assigned"
     TICKET_UPDATE_ADDED = "TICKET_UPDATE_ADDED", "Ticket Update Added"
+    TICKET_DETAILS_UPDATED = "TICKET_DETAILS_UPDATED", "Ticket Details Updated"
+    TICKET_OTP_SENT = "TICKET_OTP_SENT", "Ticket Access Code Sent"
+    TICKET_OTP_VERIFIED = "TICKET_OTP_VERIFIED", "Ticket Access Code Verified"
+    TICKET_OTP_FAILED = "TICKET_OTP_FAILED", "Ticket Access Code Failed"
     ACCESS_APPROVED = "ACCESS_APPROVED", "Access Request Approved"
     ACCESS_REJECTED = "ACCESS_REJECTED", "Access Request Rejected"
     ACCESS_IMPLEMENTED = "ACCESS_IMPLEMENTED", "Access Change Implemented"
@@ -72,6 +76,7 @@ class AuditLog(models.Model):
 
     id = models.BigAutoField(primary_key=True)
     unique_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="audit_entries")
 
     entity_type = models.CharField(max_length=60)
     entity_id = models.BigIntegerField(null=True, blank=True)
@@ -98,6 +103,7 @@ class AuditLog(models.Model):
         db_table = "audit_log"
         ordering = ["-performed_at", "-id"]
         indexes = [
+            models.Index(fields=["company", "performed_at"], name="idx_audit_company_time"),
             models.Index(fields=["entity_type", "entity_id"], name="idx_audit_entity"),
             models.Index(fields=["action", "performed_at"], name="idx_audit_action_time"),
             models.Index(fields=["performed_by", "performed_at"], name="idx_audit_user_time"),

@@ -15,6 +15,8 @@ def resolve_bug(*, bug, actor, root_cause, resolution, root_cause_type=None,
                 resolved_date=None, remarks="", request=None,
                 allow_reopened_verification=False):
     """Record the root cause and resolution, then move to Resolved."""
+    from common.permissions.company import validate_company_relations
+    validate_company_relations(bug.company_id, {"root_cause_type": root_cause_type})
     resolved_date = resolved_date or local_today()
 
     bug.root_cause = root_cause

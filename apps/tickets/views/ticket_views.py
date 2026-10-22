@@ -36,7 +36,7 @@ from apps.tickets.serializers import (
     TicketWorkflowSerializer,
     WorkTransitionSerializer,
 )
-from apps.tickets.serializers.ticket import DeleteTicketSerializer
+from apps.tickets.serializers.ticket import DeleteTicketSerializer, WorkDetailsSerializer
 from apps.tickets.services.outbound_mail import queue_deleted_notice
 from apps.tickets.selectors import base_ticket_queryset
 from common.permissions.require import RequirePermission, has_permission
@@ -82,6 +82,7 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         "chat_receipts": [RequirePermission("tickets.ticket.view")],
         "add_update": [RequirePermission("tickets.ticket.add_update")],
         "work_transition": [RequirePermission("tickets.ticket.add_update")],
+        "work_details": [RequirePermission("tickets.ticket.add_update")],
         "review": [RequirePermission("tickets.ticket.classify")],
         "assign": [RequirePermission("tickets.ticket.assign")],
         "reassign": [RequirePermission("tickets.ticket.reassign")],
@@ -109,7 +110,18 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
 
     def get_queryset(self):
         queryset = base_ticket_queryset()
+        if self.action == "list" and self.request.query_params.get("submodule") == "unassigned":
+            from apps.tickets.selectors.queries import with_description_messages
+
+            queryset = with_description_messages(queryset)
         return scope_ticket_queryset(queryset, self.request.user)
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["include_description_messages"] = (
+            self.action == "list" and self.request.query_params.get("submodule") == "unassigned"
+        )
+        return context
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -132,7 +144,7 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         from apps.tickets.services.outbound_mail import queue_acknowledgement
         from apps.tickets.services.ticket_service import create_manual_ticket
 
-        serializer = CreateTicketSerializer(data=request.data)
+        serializer = CreateTicketSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         requester = request.user
@@ -151,6 +163,7 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
                 title=data["title"],
                 description=data["description"],
                 source=data["source"],
+                company=data.get("company"),
                 reported_by_email=data.get("reported_by_email", ""),
                 reported_by_name=data.get("reported_by_name", ""),
                 request=request,
@@ -276,7 +289,7 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         from apps.tickets.services.ticket_service import transition_work
 
         ticket = self._get_for_write(request)
-        serializer = WorkTransitionSerializer(data=request.data)
+        serializer = WorkTransitionSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         to_status = serializer.validated_data["to_status"]
         remarks = serializer.validated_data.get("remarks", "")
@@ -293,6 +306,13 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
             raise PermissionDenied("A tester must review a reopened ticket before development resumes.")
 
         with transaction.atomic():
+            details = serializer.validated_data.get("details")
+            if details is not None:
+                if to_status != TicketStatus.IN_PROGRESS:
+                    raise ValidationError({"details": ["Use the work-details action to edit details without starting work."]})
+                from apps.tickets.services.work_details_service import save_work_details
+                ticket = save_work_details(ticket=ticket, actor=request.user, details=details,
+                                           request=request, complete=True)
             updated = transition_work(
                 ticket=ticket, actor=request.user, to_status=to_status,
                 remarks=remarks, payload={
@@ -305,7 +325,20 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
                 queue_closed_notice(ticket=updated, remarks=remarks)
 
         updated = base_ticket_queryset().get(pk=updated.pk)
-        return ok(SupportTicketDetailSerializer(updated).data, message="Ticket updated.")
+        return ok(SupportTicketDetailSerializer(updated, context={"request": request}).data, message="Ticket updated.")
+
+    @action(detail=True, methods=["patch"], url_path="work-details")
+    def work_details(self, request, unique_id=None):
+        from apps.tickets.services.work_details_service import save_work_details
+
+        ticket = self._get_for_write(request)
+        serializer = WorkDetailsSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        updated = save_work_details(ticket=ticket, actor=request.user,
+                                    details=serializer.validated_data, request=request)
+        return ok(SupportTicketDetailSerializer(
+            base_ticket_queryset().get(pk=updated.pk), context={"request": request},
+        ).data, message="Work details saved.")
 
     @action(detail=True, methods=["get"])
     def timeline(self, request, unique_id=None):
@@ -373,62 +406,23 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
 
     @action(detail=True, methods=["post"])
     def review(self, request, unique_id=None):
-        from apps.masters.models import (
-            ModuleMaster,
-            PriorityMaster,
-            ProjectMaster,
-            SeverityMaster,
-            SubmoduleMaster,
-        )
-        from apps.tickets.services.ticket_service import review_ticket
+        from apps.tickets.services.routing_service import route_ticket
 
         ticket = self._get_for_write(request)
         serializer = ReviewTicketSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-
-        def resolve(model, key):
-            value = data.get(key)
-            if not value:
-                return None
-            instance = model.objects.filter(unique_id=value, is_deleted=False).first()
-            if instance is None:
-                raise ValidationError({key: ["No such record."]})
-            return instance
-
-        owner = None
-        if data.get("owner"):
-            User = request.user.__class__
-            owner = User.objects.filter(unique_id=data["owner"], is_active=True).first()
-            if owner is None:
-                raise ValidationError({"owner": ["No such active user."]})
-
-        was_unassigned = not ticket.owner_id
+        owner = request.user.__class__.objects.filter(unique_id=data["owner"], is_active=True).first()
+        if owner is None:
+            raise ValidationError({"owner": ["Choose an active developer."]})
         with transaction.atomic():
-            locked = SupportTicket.objects.select_for_update().get(pk=ticket.pk)
-            reviewed = review_ticket(
-                ticket=locked,
-                actor=request.user,
-                ticket_type=data["ticket_type"],
-                title=data.get("title") or None,
-                description=data.get("description"),
-                project=resolve(ProjectMaster, "project"),
-                module=resolve(ModuleMaster, "module"),
-                submodule=resolve(SubmoduleMaster, "submodule"),
-                priority=resolve(PriorityMaster, "priority"),
-                severity=resolve(SeverityMaster, "severity"),
-                owner=owner,
-                environment=data.get("environment") or None,
-                expected_closure_date=data.get("expected_closure_date"),
-                remarks=data.get("remarks", ""),
-                request=request,
-            )
-            if was_unassigned and reviewed.owner_id and reviewed.ticket_no:
-                from apps.tickets.services.outbound_mail import queue_assigned_notice
-                queue_assigned_notice(ticket=reviewed)
-
-        reviewed = base_ticket_queryset().get(pk=reviewed.pk)
-        return ok(SupportTicketDetailSerializer(reviewed).data)
+            reviewed = route_ticket(ticket=ticket, actor=request.user,
+                                    ticket_type=data["ticket_type"], owner=owner, request=request)
+            from apps.tickets.services.outbound_mail import queue_assigned_notice
+            queue_assigned_notice(ticket=reviewed)
+        return ok(SupportTicketDetailSerializer(
+            base_ticket_queryset().get(pk=reviewed.pk), context={"request": request},
+        ).data)
 
     @action(detail=True, methods=["post"])
     def assign(self, request, unique_id=None):
@@ -504,6 +498,9 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         ).first()
         if owner is None:
             raise ValidationError({"owner": ["No such active user."]})
+
+        from common.permissions.company import validate_company_relations
+        validate_company_relations(ticket.company_id, {"owner": owner})
 
         if not ticket.ticket_no:
             from apps.tickets.services.ticket_number import generate_ticket_no

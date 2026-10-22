@@ -1,15 +1,8 @@
-"""The SupportTicket model (spec 21, 22).
+"""Company-owned request intake and work details.
 
-A lightweight intake record that sits in front of the existing Bug domain rather
-than replacing it. Email always lands here first; a Bug row is created only when
-a human confirms the classification and supplies the project, priority and
-severity that bug_tracker requires and an email cannot supply.
-
-That indirection is the whole point of the model. Bug.project, Bug.priority and
-Bug.severity are non-nullable, and Bug.reported_by is a PROTECT foreign key to a
-real user -- an email from an unknown sender satisfies none of those. Without a
-ticket in front, intake would have to invent a fallback project and fill the bug
-list with unreviewed external text.
+TL supplies type and developer. Work metadata remains nullable until the assigned
+developer starts work. BUG tickets also link one workflow row in bug_tracker.
+Unmapped incoming mail has no company and is visible only to Super Admin.
 """
 
 from django.conf import settings
@@ -63,6 +56,11 @@ class SupportTicket(BaseMaster):
     needs_review = models.BooleanField(default=True)
 
     # ---- ROUTING (nullable: an unclassified ticket has none of these yet) ----
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="support_tickets")
+    department = models.ForeignKey("masters.DepartmentMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="support_tickets")
+    site = models.ForeignKey("masters.SiteMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="support_tickets")
+    severity = models.ForeignKey("masters.SeverityMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="support_tickets")
+    environment = models.CharField(max_length=20, blank=True, default="")
     project = models.ForeignKey(
         "masters.ProjectMaster", on_delete=models.PROTECT, null=True, blank=True,
         related_name="support_tickets", db_column="project_id",
@@ -150,6 +148,7 @@ class SupportTicket(BaseMaster):
             ),
         ]
         indexes = [
+            models.Index(fields=["company", "is_deleted", "status"], name="idx_ticket_company_state"),
             models.Index(fields=["status", "is_deleted"], name="idx_ticket_status_del"),
             models.Index(fields=["ticket_type", "status"], name="idx_ticket_type_status"),
             models.Index(fields=["needs_review", "created_at"], name="idx_ticket_review"),

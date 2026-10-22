@@ -27,6 +27,7 @@ from apps.tickets.selectors.attachments import valid_email_attachments
 
 
 TICKET_LIST_RELATIONS = (
+    "company", "department", "site", "severity",
     "project",
     "module",
     "submodule",
@@ -143,3 +144,12 @@ def base_ticket_queryset(today=None, include_deleted=False):
         ),
         today=today,
     )
+
+
+def with_description_messages(queryset):
+    """Batch-load full intake threads for the paginated unassigned queue only."""
+    return queryset.prefetch_related(Prefetch(
+        "mails",
+        queryset=MailIntake.objects.order_by("is_thread_reply", "received_at", "id").prefetch_related("attachments"),
+        to_attr="_description_mails",
+    ))

@@ -39,6 +39,7 @@ class BugFilter(django_filters.FilterSet):
     """
 
     search = django_filters.CharFilter(method="filter_search")
+    company = UUIDLookupFilter(field_name="company__unique_id")
     project = UUIDLookupFilter(field_name="project__unique_id")
     module = UUIDLookupFilter(field_name="module__unique_id")
     submodule = UUIDLookupFilter(field_name="submodule__unique_id")

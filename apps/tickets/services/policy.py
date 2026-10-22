@@ -21,6 +21,21 @@ REASSIGNABLE_STATUSES = (
     TicketStatus.APPROVED,
 )
 
+EDITABLE_DETAIL_STATUSES = (
+    TicketStatus.ASSIGNED, TicketStatus.NEW, TicketStatus.CONFIRMED,
+    TicketStatus.APPROVED, TicketStatus.PENDING_APPROVAL, TicketStatus.IN_PROGRESS,
+    TicketStatus.PENDING, TicketStatus.ON_HOLD,
+)
+
+
+def can_edit_details(ticket, user):
+    return bool(
+        user and user.is_authenticated and ticket.owner_id == user.pk
+        and not ticket.needs_review and effective_status(ticket) in EDITABLE_DETAIL_STATUSES
+        and has_permission(user, "tickets.ticket.add_update")
+        and can_mutate_ticket(user, ticket)
+    )
+
 
 def effective_status(ticket):
     return ticket.bug.status if ticket.bug_id else ticket.status

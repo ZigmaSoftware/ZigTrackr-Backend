@@ -40,7 +40,13 @@ def classify_mail(context, *, config=None, provider=None, mapper=None):
     """
     config = config or ClassificationConfig.from_settings()
     provider = provider or get_provider(config)
-    mapper = mapper or ModuleMapper(config=config)
+    if mapper is None:
+        from apps.classification.models import ModuleMappingRule
+        rules = ModuleMappingRule.objects.filter(
+            project__company__unique_id=context.company_unique_id,
+            is_active=True, is_deleted=False,
+        ).select_related("project", "module", "submodule") if context.company_unique_id else []
+        mapper = ModuleMapper(config=config, rules=list(rules))
 
     result = provider.classify(context)
 

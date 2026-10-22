@@ -9,6 +9,7 @@ from apps.bugs.filters import BugFilter
 from apps.bugs.selectors import base_bug_queryset
 from apps.reports.selectors import (
     aging_report,
+    company_report,
     closure_report,
     daily_bug_report,
     employee_report,
@@ -62,6 +63,13 @@ class EmployeeReportView(ReportView):
 
     def build(self, request):
         return employee_report(request.user)
+
+
+class CompanyReportView(ReportView):
+    report_name = "company-report"
+
+    def build(self, request):
+        return company_report(request.user)
 
 
 class ProjectReportView(ReportView):

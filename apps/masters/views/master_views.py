@@ -1,8 +1,13 @@
 """Master CRUD endpoints."""
 
+from uuid import UUID
+
+from django.db import transaction
 from django.db.models import Count, Q
+from rest_framework.exceptions import ValidationError
 
 from apps.masters.models import (
+    CompanyMaster,
     DepartmentMaster,
     ModuleMaster,
     PriorityMaster,
@@ -14,6 +19,7 @@ from apps.masters.models import (
     TeamMaster,
 )
 from apps.masters.serializers import (
+    CompanySerializer,
     DepartmentSerializer,
     ModuleSerializer,
     PrioritySerializer,
@@ -29,12 +35,50 @@ from common.viewsets import (
     PermissionByActionMixin,
     master_permissions,
 )
+from common.permissions.company import require_super_admin, scope_company_queryset
 
 
 class BaseMasterViewSet(PermissionByActionMixin, AuditedSoftDeleteViewSet):
     permission_map = master_permissions()
     search_fields = ["name", "code"]
     ordering_fields = ["name", "code", "created_at"]
+
+    def filter_company(self, queryset, field="company__unique_id"):
+        company_pk_field = field.removesuffix("__unique_id") + "_id"
+        queryset = scope_company_queryset(queryset, self.request.user, company_pk_field)
+        company = self.request.query_params.get("company")
+        if company:
+            try:
+                company = UUID(company)
+            except (ValueError, TypeError, AttributeError):
+                raise ValidationError({"company": ["Select a valid company."]})
+            queryset = queryset.filter(**{field: company})
+        return queryset
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if hasattr(queryset.model, "company"):
+            queryset = self.filter_company(queryset).select_related("company")
+        return queryset
+
+
+class CompanyViewSet(BaseMasterViewSet):
+    queryset = CompanyMaster.objects.all()
+    serializer_class = CompanySerializer
+
+    def get_queryset(self):
+        return scope_company_queryset(super().get_queryset(), self.request.user, "pk")
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if self.action not in ("list", "retrieve", "metadata"):
+            require_super_admin(request.user)
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        from apps.masters.services import seed_company_classifications
+        seed_company_classifications(serializer.instance)
 
 
 class PriorityViewSet(BaseMasterViewSet):
@@ -116,12 +160,12 @@ class ProjectViewSet(BaseMasterViewSet):
     def get_queryset(self):
         qs = (
             ProjectMaster.objects.filter(is_deleted=False)
-            .select_related("project_lead")
+            .select_related("company", "project_lead")
             .annotate(module_count=Count("modules", filter=Q(modules__is_deleted=False)))
         )
         if not self._include_inactive():
             qs = qs.filter(is_active=True)
-        return qs
+        return self.filter_company(qs)
 
 
 class ModuleViewSet(BaseMasterViewSet):
@@ -134,13 +178,13 @@ class ModuleViewSet(BaseMasterViewSet):
     }
 
     def get_queryset(self):
-        qs = ModuleMaster.objects.filter(is_deleted=False).select_related("project")
+        qs = ModuleMaster.objects.filter(is_deleted=False).select_related("project", "project__company")
         project = self.request.query_params.get("project")
         if project:
             qs = qs.filter(project__unique_id=project)
         if not self._include_inactive():
             qs = qs.filter(is_active=True)
-        return qs
+        return self.filter_company(qs, "project__company__unique_id")
 
 
 class SubmoduleViewSet(BaseMasterViewSet):
@@ -153,7 +197,7 @@ class SubmoduleViewSet(BaseMasterViewSet):
 
     def get_queryset(self):
         qs = (SubmoduleMaster.objects.filter(is_deleted=False)
-              .select_related("module", "module__project"))
+              .select_related("module", "module__project", "module__project__company"))
         module = self.request.query_params.get("module")
         project = self.request.query_params.get("project")
         if module:
@@ -162,4 +206,4 @@ class SubmoduleViewSet(BaseMasterViewSet):
             qs = qs.filter(module__project__unique_id=project)
         if not self._include_inactive():
             qs = qs.filter(is_active=True)
-        return qs
+        return self.filter_company(qs, "module__project__company__unique_id")

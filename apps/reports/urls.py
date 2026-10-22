@@ -9,6 +9,7 @@ from apps.reports.views import (
     ModuleReportView,
     OverdueReportView,
     PriorityReportView,
+    CompanyReportView,
     ProjectReportView,
     RootCauseReportView,
 )
@@ -16,6 +17,7 @@ from apps.reports.views import (
 urlpatterns = [
     path("daily/", DailyBugReportView.as_view(), name="report-daily"),
     path("employee/", EmployeeReportView.as_view(), name="report-employee"),
+    path("company/", CompanyReportView.as_view(), name="report-company"),
     path("project/", ProjectReportView.as_view(), name="report-project"),
     path("module/", ModuleReportView.as_view(), name="report-module"),
     path("priority/", PriorityReportView.as_view(), name="report-priority"),

@@ -12,7 +12,7 @@ from apps.mail_intake.services.intake_orchestrator import (
     _continue_processing,
     process_parsed_mail,
 )
-from apps.mail_intake.tests.factories import make_mail_intake, make_parsed
+from apps.mail_intake.tests.factories import DEFAULT_MAILBOX, make_mail_intake, make_parsed
 from apps.tickets.constants import TicketStatus, TicketType
 from apps.tickets.models import OutboundMail, SupportTicket
 from apps.tickets.tasks import deliver_outbound_mail
@@ -35,6 +35,10 @@ SEED_RULES = [
 class IntakePipelineTests(TestCase):
     @classmethod
     def setUpTestData(cls):
+        from apps.bugs.tests.factories import make_company
+        cls.company = make_company()
+        cls.company.support_email = DEFAULT_MAILBOX
+        cls.company.save(update_fields=["support_email"])
         for ticket_type, rule_type, pattern, score in SEED_RULES:
             ClassificationRule.objects.create(
                 ticket_type=ticket_type, rule_type=rule_type,
@@ -186,7 +190,8 @@ class IntakePipelineTests(TestCase):
 
     def test_scenario_7_reply_updates_the_same_ticket(self):
         process_parsed_mail(
-            make_parsed(subject="[BUG] Login fails", message_id="<first@x.com>")
+            make_parsed(subject="[BUG] Login fails", message_id="<first@x.com>"),
+            mailbox_address=DEFAULT_MAILBOX,
         )
         ticket = SupportTicket.objects.get()
 
@@ -195,7 +200,7 @@ class IntakePipelineTests(TestCase):
                 subject=f"Re: [{ticket.reference}] Login fails",
                 body="Still failing today.",
                 message_id="<reply@x.com>",
-            )
+            ), mailbox_address=DEFAULT_MAILBOX,
         )
         self.assertEqual(SupportTicket.objects.count(), 1)
         self.assertEqual(MailIntake.objects.count(), 2)
@@ -207,7 +212,8 @@ class IntakePipelineTests(TestCase):
     def test_reply_via_in_reply_to_on_our_acknowledgement(self):
         """The reply points at OUR ack's Message-ID, not the user's original."""
         process_parsed_mail(
-            make_parsed(subject="[BUG] Report screen blank", message_id="<orig@x.com>")
+            make_parsed(subject="[BUG] Report screen blank", message_id="<orig@x.com>"),
+            mailbox_address=DEFAULT_MAILBOX,
         )
         ticket = SupportTicket.objects.get()
         self.assertTrue(ticket.ack_message_id, "acknowledgement should have been recorded")
@@ -217,7 +223,7 @@ class IntakePipelineTests(TestCase):
                 subject="Re: Report screen blank",  # no ticket number quoted
                 message_id="<reply2@x.com>",
                 in_reply_to=f"<{ticket.ack_message_id}>",
-            )
+            ), mailbox_address=DEFAULT_MAILBOX,
         )
         self.assertEqual(SupportTicket.objects.count(), 1)
         self.assertEqual(

@@ -1,6 +1,7 @@
 """In-app notifications (spec 52)."""
 
 from django.utils import timezone
+from django.db.models import Q
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -20,13 +21,17 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         """A user only ever sees their own notifications."""
         qs = Notification.objects.filter(recipient=self.request.user).select_related("bug")
+        user = self.request.user
+        if not user.is_superuser:
+            qs = qs.filter(Q(ticket__isnull=True) | Q(ticket__company_id=user.company_id))
+            qs = qs.filter(Q(bug__isnull=True) | Q(bug__company_id=user.company_id))
         if self.request.query_params.get("unread", "").lower() in ("1", "true"):
             qs = qs.filter(is_read=False)
         return qs
 
     @action(detail=False, methods=["get"])
     def unread_count(self, request):
-        count = Notification.objects.filter(recipient=request.user, is_read=False).count()
+        count = self.get_queryset().filter(is_read=False).count()
         return ok({"count": count}, message="Unread count retrieved.")
 
     @action(detail=True, methods=["post"])
@@ -40,7 +45,5 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=["post"], url_path="read-all")
     def read_all(self, request):
-        updated = Notification.objects.filter(
-            recipient=request.user, is_read=False
-        ).update(is_read=True, read_at=timezone.now())
+        updated = self.get_queryset().filter(is_read=False).update(is_read=True, read_at=timezone.now())
         return ok({"updated": updated}, message="All notifications marked as read.")

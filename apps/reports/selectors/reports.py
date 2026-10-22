@@ -105,6 +105,31 @@ def project_report(user, today=None):
              "overdue": r["overdue"], "critical": r["critical"]} for r in rows]
 
 
+def company_report(user, today=None):
+    """Bug totals per company (spec 35, company tier).
+
+    Bug.company is nullable -- bugs predating the multi-company hierarchy, and
+    any raised outside one, have none. Those are grouped under a single
+    "Unassigned" row rather than dropped, so the totals still reconcile with
+    the other reports.
+    """
+    not_terminal = ~Q(status__in=TERMINAL_STATUSES)
+    rows = (_grouped(_scoped(user, today))
+            .values("company__unique_id", "company__code", "company__name")
+            .annotate(
+                total=Count("id"),
+                open_count=Count("id", filter=not_terminal),
+                closed=Count("id", filter=Q(status=BugStatus.CLOSED)),
+                overdue=Count("id", filter=Q(is_overdue=True)),
+                critical=Count("id", filter=Q(priority__code="CRITICAL") & not_terminal),
+            ).order_by("-total"))
+    return [{"id": str(r["company__unique_id"]) if r["company__unique_id"] else "",
+             "code": r["company__code"] or "",
+             "name": r["company__name"] or "Unassigned",
+             "total": r["total"], "open": r["open_count"], "closed": r["closed"],
+             "overdue": r["overdue"], "critical": r["critical"]} for r in rows]
+
+
 def module_report(user, today=None, project=None):
     """Spec 35, with drill-down to submodule."""
     qs = _scoped(user, today).filter(module__isnull=False)
@@ -147,15 +172,33 @@ def priority_report(user, today=None):
              "overdue": r["overdue"]} for r in rows]
 
 
+# The timeline lists real bugs rather than a count per band, so it needs the
+# rows themselves. Capped because this is a triage view: nobody routes the
+# 500th oldest bug from a report page, and an unbounded list would make the
+# response grow without limit.
+AGING_TIMELINE_LIMIT = 150
+
+
 def aging_report(user, today=None):
+    from apps.bugs.serializers import BugListSerializer
+
     qs = _scoped(user, today).filter(~Q(status__in=TERMINAL_STATUSES))
     rows = _grouped(qs).values("aging_band").annotate(count=Count("id"))
     lookup = {r["aging_band"]: r["count"] for r in rows}
     summary = [{"code": c, "label": l, "count": lookup.get(c, 0)} for c, l in AGING_BANDS]
+    total = sum(row["count"] for row in summary)
+
+    # Oldest first: the whole point of an aging view is what has waited
+    # longest, so the top of the list is where attention is needed.
+    oldest = qs.order_by("-age_days", "reported_date")[:AGING_TIMELINE_LIMIT]
     return {
         "summary": summary,
         "average_age": round(qs.aggregate(a=Avg("age_days"))["a"] or 0, 1),
-        "total_open": sum(row["count"] for row in summary),
+        "total_open": total,
+        "bugs": BugListSerializer(oldest, many=True).data,
+        # Lets the client say "showing 150 of 320" rather than silently
+        # truncating.
+        "shown": min(total, AGING_TIMELINE_LIMIT),
     }
 
 

@@ -67,13 +67,17 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("Run seed_demo_users first."))
             return
 
-        project = ProjectMaster.objects.filter(code="ZERP").first()
+        project = ProjectMaster.objects.filter(company__code="ZIGMA", code="ZERP").first()
+        if project is None:
+            self.stderr.write(self.style.ERROR("Run seed_demo_users first."))
+            return
+        company = project.company
         modules = list(ModuleMaster.objects.filter(project=project))
-        priorities = {p.code: p for p in PriorityMaster.objects.all()}
-        severities = {s.code: s for s in SeverityMaster.objects.all()}
-        root_causes = list(RootCauseTypeMaster.objects.all())
-        departments = list(DepartmentMaster.objects.all())
-        sites = list(SiteMaster.objects.all())
+        priorities = {p.code: p for p in PriorityMaster.objects.filter(company=company)}
+        severities = {s.code: s for s in SeverityMaster.objects.filter(company=company)}
+        root_causes = list(RootCauseTypeMaster.objects.filter(company=company))
+        departments = list(DepartmentMaster.objects.filter(company=company))
+        sites = list(SiteMaster.objects.filter(company=company))
 
         if not (project and modules and priorities and severities):
             self.stderr.write(self.style.ERROR("Run seed_masters and seed_demo_users first."))

@@ -8,6 +8,7 @@ from apps.audit.models import AuditLog
 from apps.audit.serializers import AuditLogSerializer
 from common.permissions.require import RequirePermission, has_permission
 from common.permissions.scoping import scope_bug_queryset
+from common.permissions.company import scope_company_queryset
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -23,7 +24,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     ordering = ["-performed_at"]
 
     def get_queryset(self):
-        qs = AuditLog.objects.select_related("performed_by")
+        qs = scope_company_queryset(AuditLog.objects.select_related("performed_by"), self.request.user)
 
         # admin.audit.view is Admin-only today, so this is not currently
         # reachable by anyone with limited bug visibility -- but spec 16's

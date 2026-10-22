@@ -143,6 +143,11 @@ REST_FRAMEWORK = {
         # ticket number, so the rate limit is what makes enumeration impractical.
         "public_ticket_lookup": os.getenv("PUBLIC_LOOKUP_THROTTLE_RATE", "10/min"),
         "public_track_chat": os.getenv("PUBLIC_TRACK_CHAT_THROTTLE_RATE", "30/min"),
+        # Sending a passcode costs an email, so requests are limited harder
+        # than verifications. Both are keyed on IP + ticket number so one
+        # ticket being hammered cannot lock everyone else out.
+        "public_otp_request": os.getenv("PUBLIC_OTP_REQUEST_THROTTLE_RATE", "5/min"),
+        "public_otp_verify": os.getenv("PUBLIC_OTP_VERIFY_THROTTLE_RATE", "10/min"),
     },
 }
 

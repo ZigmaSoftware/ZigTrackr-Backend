@@ -7,6 +7,7 @@ from django.db import transaction
 
 from apps.accounts.models import Role, UserRole
 from apps.masters.models import (
+    CompanyMaster,
     DepartmentMaster,
     ModuleMaster,
     ProjectMaster,
@@ -27,6 +28,7 @@ DEFAULT_PASSWORD = "Zigma@12345"
 
 # username, full name, email, role code, employee code
 DEMO_USERS = [
+    ("superadmin", "Super Admin", "superadmin@zigma.in", ROLE_ADMIN, "EMP000"),
     ("admin", "System Admin", "admin@zigma.in", ROLE_ADMIN, "EMP001"),
     ("lead", "Priya Raman", "lead@zigma.in", ROLE_TEAM_LEAD, "EMP002"),
     ("kiran", "Kiran Kumar", "kiran@zigma.in", ROLE_DEVELOPER, "EMP003"),
@@ -69,17 +71,21 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("No roles found. Run seed_roles first."))
             return
 
-        it_dept = DepartmentMaster.objects.filter(name="IT").first()
-        ho_site = SiteMaster.objects.filter(name="HO").first()
+        company, _ = CompanyMaster.objects.get_or_create(code="ZIGMA", defaults={"name": "Zigma Global Environ Solutions"})
+        it_dept = DepartmentMaster.objects.filter(company=company, name="IT").first()
+        ho_site = SiteMaster.objects.filter(company=company, name="HO").first()
         team, _ = TeamMaster.objects.get_or_create(
-            name="ERP Core Team", defaults={"code": "ERP", "is_active": True},
+            company=company, name="ERP Core Team", defaults={"code": "ERP", "is_active": True},
         )
 
         created_users = []
         for username, full_name, email, role_code, emp_code in DEMO_USERS:
+            if username == "superadmin" and User.objects.filter(is_superuser=True).exclude(username=username).exists():
+                continue
             user, created = User.objects.get_or_create(
                 username=username,
                 defaults={
+                    "company": company,
                     "email": email,
                     "full_name": full_name,
                     "employee_code": emp_code,
@@ -88,7 +94,7 @@ class Command(BaseCommand):
                     "team": team,
                     "is_active": True,
                     "is_staff": role_code == ROLE_ADMIN,
-                    "is_superuser": role_code == ROLE_ADMIN,
+                    "is_superuser": username == "superadmin",
                 },
             )
             if created:
@@ -106,7 +112,7 @@ class Command(BaseCommand):
             team.save(update_fields=["team_lead", "updated_at"])
 
         project, _ = ProjectMaster.objects.get_or_create(
-            code="ZERP",
+            company=company, code="ZERP",
             defaults={"name": "Zigma ERP", "project_lead": lead, "is_active": True},
         )
         module_count = submodule_count = 0

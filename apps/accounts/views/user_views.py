@@ -3,6 +3,7 @@
 from django.contrib.auth import get_user_model
 from django.db.models import Count
 from django.db.models import Prefetch
+from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -30,6 +31,10 @@ from apps.accounts.services.user_service import (
     update_user,
 )
 from common.permissions.require import RequirePermission
+from common.permissions.company import scope_company_queryset, is_super_admin, require_super_admin
+from apps.accounts.services.company_roles import (
+    administration_company, editable_role, lock_company_role, publish_role_access_changed, require_role_management, role_settings,
+)
 from common.responses import EnvelopeMessageMixin, created, ok
 from common.services.audit import record_field_changes
 from common.viewsets import PermissionByActionMixin
@@ -86,11 +91,15 @@ class UserViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
         return UserSerializer
 
     def get_queryset(self):
-        qs = (User.objects.filter(is_deleted=False)
-              .select_related("department", "team", "site")
+        qs = (User.objects.filter(is_deleted=False, is_superuser=False)
+              .select_related("company", "department", "team", "site")
               .prefetch_related(Prefetch(
                   "user_roles",
                   queryset=UserRole.objects.filter(is_active=True).select_related("role"))))
+        qs = scope_company_queryset(qs, self.request.user)
+        company = self.request.query_params.get("company")
+        if company:
+            qs = qs.filter(company__unique_id=company)
         if self.request.query_params.get("include_inactive", "").lower() not in ("1", "true"):
             qs = qs.filter(is_active=True)
         team = self.request.query_params.get("team")
@@ -102,7 +111,7 @@ class UserViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
         return qs
 
     def create(self, request, *args, **kwargs):
-        serializer = UserWriteSerializer(data=request.data)
+        serializer = UserWriteSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = dict(serializer.validated_data)
         password = data.pop("password")
@@ -114,7 +123,7 @@ class UserViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
     def update(self, request, *args, **kwargs):
         user = self.get_object()
         partial = kwargs.pop("partial", False)
-        serializer = UserWriteSerializer(user, data=request.data, partial=partial)
+        serializer = UserWriteSerializer(user, data=request.data, partial=partial, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = dict(serializer.validated_data)
         data.pop("password", None)  # never set via the profile-edit path
@@ -139,7 +148,7 @@ class UserViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
         # is_deleted users -- a deactivated account can never be fetched
         # through the normal detail lookup, deliberately, so reactivation
         # looks it up directly instead.
-        user = get_object_or_404(User, unique_id=unique_id, is_deleted=True)
+        user = get_object_or_404(scope_company_queryset(User.objects.filter(is_superuser=False), request.user), unique_id=unique_id, is_deleted=True)
         user = reactivate_user(user=user, actor=request.user, request=request)
         return ok(UserSerializer(user).data, message="User reactivated successfully.")
 
@@ -180,6 +189,15 @@ class UserViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
 
 
 class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelViewSet):
+    http_method_names = ["get", "put", "patch", "delete", "head", "options"]
+
+    def get_company(self):
+        return administration_company(self.request.user, self.request.query_params.get("company"))
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["role_settings"] = role_settings(self.get_queryset(), self.get_company())
+        return context
     serializer_class = RoleLiteSerializer
     lookup_field = "unique_id"
     lookup_url_kwarg = "unique_id"
@@ -211,33 +229,37 @@ class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
             return RoleWriteSerializer
         return RoleLiteSerializer
 
+    @transaction.atomic
     def update(self, request, *args, **kwargs):
         role = self.get_object()
+        company = self.get_company()
+        require_role_management(request.user, role, company=company, codename="admin.role.manage")
+        role = Role.objects.select_for_update().get(pk=role.pk)
+        entity = lock_company_role(role, company, request.user) if company else role
         serializer = RoleWriteSerializer(
-            role, data=request.data, partial=kwargs.pop("partial", False)
+            entity, data=request.data, partial=kwargs.pop("partial", False)
         )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        if role.is_system and data.get("is_active") is False:
-            raise ValidationError({"is_active": ["System roles cannot be deactivated."]})
         changes = {}
         for field, value in data.items():
-            old = getattr(role, field)
+            old = getattr(entity, field)
             if old != value:
                 changes[field] = (old, value)
-                setattr(role, field, value)
+                setattr(entity, field, value)
         if changes:
-            role.updated_by = getattr(request.user, "unique_id", None)
-            role.save()
+            entity.updated_by = getattr(request.user, "unique_id", None)
+            entity.save()
             record_field_changes(
-                entity=role,
+                entity=entity,
                 actor=request.user,
                 changes=changes,
                 action=AuditAction.ROLE_UPDATED,
                 request=request,
             )
+            transaction.on_commit(lambda: publish_role_access_changed(role.pk, company.pk if company else None))
         refreshed = self.get_queryset().get(pk=role.pk)
-        return ok(RoleLiteSerializer(refreshed).data, message="Role updated.")
+        return ok(RoleLiteSerializer(refreshed, context=self.get_serializer_context()).data, message="Role updated.")
 
     def destroy(self, request, *args, **kwargs):
         raise ValidationError({"detail": ["Roles cannot be deleted from this screen."]})
@@ -248,16 +270,14 @@ class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
         serializer = RolePermissionUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         update_role_grants(role=role, actor=request.user, request=request,
-                           **serializer.validated_data)
-        return ok(self._matrix_payload(), message="Role permissions updated.")
+                           company=self.get_company(), **serializer.validated_data)
+        return ok(self._matrix_payload(request.user, self.get_company()), message="Role permissions updated.")
 
     @staticmethod
-    def _matrix_payload():
+    def _matrix_payload(user, company=None):
         permissions = list(Permission.objects.filter(is_active=True, is_deleted=False))
         roles = list(Role.objects.filter(is_active=True, is_deleted=False).order_by("rank", "name"))
-        grants = set(
-            RolePermission.objects.values_list("role__code", "permission__codename")
-        )
+        role_grants, overrides = role_settings(roles, company)
         modules = {}
         for perm in permissions:
             modules.setdefault(perm.module, []).append({
@@ -265,20 +285,22 @@ class RoleViewSet(PermissionByActionMixin, EnvelopeMessageMixin, viewsets.ModelV
                 "name": perm.name,
                 "screen": perm.screen_name,
                 "action": perm.action,
-                "roles": {r.code: (r.code, perm.codename) in grants for r in roles},
+                "roles": {r.code: perm.codename in role_grants[r.pk] for r in roles},
             })
-        submodules = permission_submodules(permissions)
+        submodules = permission_submodules(permissions, protect_admin=not is_super_admin(user))
         # Action cells may be shared by multiple screens; keep each codename
         # once, while placing the former generic ticket cells in their group.
         shared_tickets = modules.pop("tickets", [])
         modules.setdefault("ticket_management", []).extend(shared_tickets)
         return {
+            "company": {"id": str(company.unique_id), "name": company.name} if company else None,
             "roles": [
                 {
                     "id": str(r.unique_id),
                     "code": r.code,
-                    "name": r.name,
+                    "name": overrides[r.pk].name if r.pk in overrides else r.name,
                     "is_system": r.is_system,
+                    "can_manage": editable_role(user, r),
                 }
                 for r in roles
             ],
@@ -311,4 +333,5 @@ class PermissionMatrixView(APIView):
     permission_classes = [IsAuthenticated, RequirePermission("admin.permission.view")]
 
     def get(self, request):
-        return ok(RoleViewSet._matrix_payload(), message="Permission matrix retrieved.")
+        company = administration_company(request.user, request.query_params.get("company"))
+        return ok(RoleViewSet._matrix_payload(request.user, company), message="Permission matrix retrieved.")

@@ -19,6 +19,7 @@ class Bug(BaseMaster):
     bug_no = models.CharField(max_length=20, editable=False)
 
     # ---- CLASSIFICATION ----
+    company = models.ForeignKey("masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True, related_name="bugs")
     project = models.ForeignKey(
         "masters.ProjectMaster", on_delete=models.PROTECT,
         null=True, blank=True,
@@ -143,6 +144,7 @@ class Bug(BaseMaster):
             models.UniqueConstraint(fields=["bug_no"], name="uq_bug_tracker_bug_no"),
         ]
         indexes = [
+            models.Index(fields=["company", "is_deleted", "status"], name="idx_bug_company_state"),
             # ---- LIST SCREEN (spec 23, the hottest query) ----
             models.Index(fields=["status", "is_deleted"], name="idx_bug_status_deleted"),
             models.Index(fields=["owner", "status"], name="idx_bug_owner_status"),

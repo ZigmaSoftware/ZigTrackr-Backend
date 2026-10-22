@@ -9,6 +9,7 @@ accurate and more readable.
 """
 
 import logging
+from common.permissions.company import entity_company_id
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def record_audit(
     from apps.audit.models import AuditLog
 
     return AuditLog.objects.create(
+        company_id=entity_company_id(entity),
         entity_type=type(entity).__name__,
         entity_id=getattr(entity, "pk", None),
         entity_unique_id=getattr(entity, "unique_id", None),
@@ -72,6 +74,7 @@ def record_field_changes(*, entity, actor, changes, action, request=None):
         if _stringify(old) == _stringify(new):
             continue
         rows.append(AuditLog(
+            company_id=entity_company_id(entity),
             entity_type=type(entity).__name__,
             entity_id=getattr(entity, "pk", None),
             entity_unique_id=getattr(entity, "unique_id", None),

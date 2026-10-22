@@ -9,6 +9,8 @@ from rest_framework import serializers
 
 from apps.accounts.models import Permission, Role, UserRole
 from apps.accounts.services.user_service import validate_user_profile_fields
+from apps.masters.models import CompanyMaster
+from common.serializers.company import CompanyRelatedFieldsMixin
 
 User = get_user_model()
 
@@ -18,21 +20,40 @@ class UserLiteSerializer(serializers.ModelSerializer):
 
     id = serializers.UUIDField(source="unique_id", read_only=True)
     name = serializers.CharField(source="display_name", read_only=True)
+    company_id = serializers.UUIDField(source="company.unique_id", read_only=True, default=None)
 
     class Meta:
         model = User
-        fields = ["id", "username", "name", "email"]
+        fields = ["id", "username", "name", "email", "company_id"]
 
 
 class RoleLiteSerializer(serializers.ModelSerializer):
     id = serializers.UUIDField(source="unique_id", read_only=True)
     permission_count = serializers.IntegerField(read_only=True)
+    can_manage = serializers.SerializerMethodField()
+
+    def get_can_manage(self, obj):
+        from apps.accounts.services.company_roles import editable_role
+        from common.permissions.require import has_permission
+        user = getattr(self.context.get("request"), "user", None)
+        return bool(user and has_permission(user, "admin.role.manage") and editable_role(user, obj))
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        grants, overrides = self.context.get("role_settings", ({}, {}))
+        override = overrides.get(instance.pk)
+        if override:
+            data.update(name=override.name, description=override.description,
+                        is_active=instance.is_active and override.is_active)
+        if instance.pk in grants:
+            data["permission_count"] = len(grants[instance.pk])
+        return data
 
     class Meta:
         model = Role
         fields = [
             "id", "code", "name", "description", "is_active", "is_system",
-            "permission_count",
+            "permission_count", "can_manage",
         ]
 
 
@@ -79,6 +100,8 @@ class UserSerializer(serializers.ModelSerializer):
     id = serializers.UUIDField(source="unique_id", read_only=True)
     name = serializers.CharField(source="display_name", read_only=True)
     roles = serializers.SerializerMethodField()
+    company_id = serializers.UUIDField(source="company.unique_id", read_only=True, default=None)
+    company_name = serializers.CharField(source="company.name", read_only=True, default=None)
     department_name = serializers.CharField(source="department.name", read_only=True, default=None)
     team_name = serializers.CharField(source="team.name", read_only=True, default=None)
     site_name = serializers.CharField(source="site.name", read_only=True, default=None)
@@ -88,7 +111,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             "id", "username", "name", "full_name", "email", "employee_code",
             "phone", "designation", "department_name", "team_name", "site_name",
-            "is_active", "roles", "last_login", "date_joined",
+            "is_active", "is_superuser", "company_id", "company_name", "roles", "last_login", "date_joined",
         ]
 
     def get_roles(self, obj):
@@ -98,7 +121,7 @@ class UserSerializer(serializers.ModelSerializer):
         ]
 
 
-class UserWriteSerializer(serializers.ModelSerializer):
+class UserWriteSerializer(CompanyRelatedFieldsMixin, serializers.ModelSerializer):
     """Create/update payload for the User Management screen (spec 16).
 
     A password is required on create and forbidden on update -- resetting a
@@ -108,6 +131,9 @@ class UserWriteSerializer(serializers.ModelSerializer):
 
     id = serializers.UUIDField(source="unique_id", read_only=True)
     password = serializers.CharField(write_only=True, required=False, min_length=8)
+    employee_code = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None, max_length=30)
+    company = serializers.SlugRelatedField(slug_field="unique_id", queryset=CompanyMaster.objects.filter(
+        is_active=True, is_deleted=False), required=False)
     # Role codes rather than role UUIDs: the caller picks from the same fixed
     # list ROLE_DEFINITIONS seeds, and a code is what every other part of this
     # codebase (ROLE_PERMISSIONS, seed_demo_users) already keys on.
@@ -119,7 +145,7 @@ class UserWriteSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             "id", "username", "email", "password", "full_name", "employee_code",
-            "phone", "is_active", "roles",
+            "phone", "is_active", "roles", "company",
         ]
 
     def to_internal_value(self, data):
@@ -130,6 +156,9 @@ class UserWriteSerializer(serializers.ModelSerializer):
                 validate_user_profile_fields(data)
         except DjangoValidationError as exc:
             raise serializers.ValidationError(exc.message_dict) from exc
+        request = self.context.get("request")
+        if isinstance(data, Mapping) and self.instance is None and "company" not in data and request and request.user.company_id and not request.user.is_superuser:
+            data = {**data, "company": str(request.user.company.unique_id)}
         return super().to_internal_value(data)
 
     def validate_username(self, value):
@@ -139,6 +168,9 @@ class UserWriteSerializer(serializers.ModelSerializer):
         if qs.exists():
             raise serializers.ValidationError("A user with this username already exists.")
         return value
+
+    def validate_employee_code(self, value):
+        return value.strip() or None if value else None
 
     def validate_email(self, value):
         if not value:

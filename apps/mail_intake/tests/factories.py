@@ -68,11 +68,13 @@ def make_parsed(**kwargs):
 def make_mail_intake(**overrides):
     """Persist a MailIntake row with sensible defaults."""
     from apps.mail_intake.models import MailIntake
+    from apps.bugs.tests.factories import make_company
 
     subject = overrides.pop("subject", "Test subject")
     body = overrides.pop("body_text", "Test body")
     normalized = normalize_body(body)
     fields = {
+        "company": make_company(),
         "from_email": DEFAULT_SENDER,
         "to_emails": [DEFAULT_MAILBOX],
         "subject": subject,

@@ -105,7 +105,71 @@ def send_message(*, ticket, text, user=None, requester_email="", reply_to_id=Non
         reply_to_message=reply,
     )
     publish_message(row)
+    _notify_chat_message(row, ticket, actor=user)
     return row
+
+
+def _notify_chat_message(row, ticket, *, actor):
+    """Tell the counterpart, not the whole team.
+
+    Deliberately narrower than notify_inbox_changed's fan-out: that nudge
+    only refreshes unread counts, so casting wide is harmless. A chat
+    notification is an interruption, and messages are the highest-volume
+    event here -- sending one to every admin on every reply is how people
+    end up muting notifications entirely.
+
+    A requester's message notifies the ticket's owner. A staff message
+    notifies nobody in-app: the requester is not a system user, and they
+    already receive it over the public track socket.
+    """
+    from apps.notifications.models import NotificationType
+    from apps.notifications.services import notify
+
+    if row.sender_type != "REQUESTER" or not ticket.owner_id:
+        return
+    notify(
+        recipients=[ticket.owner_id],
+        notification_type=NotificationType.CHAT_MESSAGE,
+        title=f"New message on {ticket.reference}",
+        message=row.message_text[:160],
+        ticket=ticket,
+        link=f"/chat?ticket={ticket.unique_id}",
+        actor=actor,
+    )
+
+
+def notify_inbox_changed(ticket):
+    """Nudge everyone whose unread counts this ticket could affect.
+
+    Sent per user rather than to one shared group because ticket visibility is
+    evaluated per user (scope_ticket_queryset): a single broadcast group has no
+    way to apply that. The nudge carries no content for the same reason -- the
+    client re-fetches its own scoped queries, so a recipient who cannot see the
+    ticket simply learns nothing from it.
+    """
+    from common.permissions.require import user_ids_with_permission
+
+    recipients = user_ids_with_permission(
+        "tickets.ticket.view_all", "tickets.ticket.classify",
+    )
+    # The people the ticket is actually about, who may hold neither codename.
+    for attr in ("owner_id", "reported_by_id"):
+        value = getattr(ticket, attr, None)
+        if value:
+            recipients.add(value)
+
+    layer = get_channel_layer()
+    from apps.accounts.models import User
+    from common.permissions.company import can_access_company
+    recipients = [person.pk for person in User.objects.filter(pk__in=recipients, is_active=True, is_deleted=False).select_related("company")
+                  if can_access_company(person, ticket)]
+    for user_id in recipients:
+        try:
+            async_to_sync(layer.group_send)(
+                f"user_inbox_{user_id}", {"type": "inbox.changed"},
+            )
+        except Exception:
+            logger.exception("Inbox nudge failed for user %s", user_id)
 
 
 def publish_message(row, *, changed=False):
@@ -118,6 +182,10 @@ def publish_message(row, *, changed=False):
             )
         except Exception:
             logger.exception("Ticket chat broadcast failed; message %s is persisted", row.pk)
+        # Separate from the room broadcast: the room only reaches people with
+        # this conversation open, which is exactly the case that was missing.
+        if not changed:
+            notify_inbox_changed(row.ticket)
 
     transaction.on_commit(publish)
 
@@ -150,6 +218,9 @@ def acknowledge_messages(*, ticket, message_ids, status, user=None, requester_em
                 )
             except Exception:
                 logger.exception("Ticket receipt broadcast failed; ticket %s is updated", ticket.pk)
+            # Reading messages clears an unread badge, so the counts move here
+            # too -- not just when a message arrives.
+            notify_inbox_changed(ticket)
 
         transaction.on_commit(publish)
     role_labels = message_role_labels(changed)

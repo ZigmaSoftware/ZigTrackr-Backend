@@ -7,6 +7,10 @@ from common.models import NamedMaster
 
 
 class ProjectMaster(NamedMaster):
+    company = models.ForeignKey(
+        "masters.CompanyMaster", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="projects",
+    )
     code = models.CharField(max_length=20)
     project_lead = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
@@ -18,7 +22,7 @@ class ProjectMaster(NamedMaster):
         db_table = "project_master"
         ordering = ["name"]
         constraints = [
-            models.UniqueConstraint(fields=["code"], name="uq_project_master_code"),
+            models.UniqueConstraint(fields=["company", "code"], name="uq_project_company_code"),
         ]
         indexes = [
             models.Index(fields=["is_active", "is_deleted"], name="idx_project_active"),

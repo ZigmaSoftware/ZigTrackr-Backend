@@ -15,6 +15,7 @@ from django.db import transaction
 from apps.accounts.models import Role, UserRole
 from apps.audit.models import AuditAction
 from common.services.audit import record_audit
+from common.permissions.company import is_super_admin, require_company_access, require_super_admin
 
 User = get_user_model()
 
@@ -22,6 +23,7 @@ User = get_user_model()
 # not expose it as writable input in User Management (including FK aliases).
 REMOVED_PROFILE_FIELDS = frozenset({
     "designation", "department", "team", "site", "department_id", "team_id", "site_id",
+    "is_superuser", "super_admin_slot", "is_staff", "user_permissions", "groups", "company_id",
 })
 
 
@@ -42,6 +44,13 @@ def create_user(*, actor, request=None, roles=None, password, **fields):
     step someone can forget, is deliberate.
     """
     validate_user_profile_fields(fields)
+    company = fields.get("company") or getattr(actor, "company", None)
+    if not company or not company.is_active or company.is_deleted:
+        raise ValidationError({"company": ["An active company is required."]})
+    require_company_access(actor, company)
+    fields["company"] = company
+    if "ADMIN" in (roles or []):
+        require_super_admin(actor)
     user = User(**fields, created_by=getattr(actor, "unique_id", None),
                updated_by=getattr(actor, "unique_id", None))
     user.set_password(password)
@@ -64,6 +73,11 @@ def update_user(*, user, actor, request=None, roles=None, **fields):
     the kind of surprise that produces support tickets like this one.
     """
     validate_user_profile_fields(fields)
+    _authorize_target(actor, user)
+    if "company" in fields and fields["company"].pk != user.company_id:
+        raise ValidationError({"company": ["Existing accounts cannot be transferred between companies. Create a new account."]})
+    if roles is not None and "ADMIN" in roles:
+        require_super_admin(actor)
     changes = {}
     for field, value in fields.items():
         if not hasattr(user, field):
@@ -123,6 +137,7 @@ def deactivate_user(*, user, actor, request=None):
     """
     from apps.authentication.services import revoke_all_user_tokens
 
+    _authorize_target(actor, user)
     user.soft_delete(deleted_by=getattr(actor, "unique_id", None))
     revoke_all_user_tokens(user)
 
@@ -133,6 +148,7 @@ def deactivate_user(*, user, actor, request=None):
 
 @transaction.atomic
 def reactivate_user(*, user, actor, request=None):
+    _authorize_target(actor, user)
     user.restore(restored_by=getattr(actor, "unique_id", None))
 
     record_audit(action=AuditAction.USER_REACTIVATED, entity=user, actor=actor,
@@ -152,6 +168,7 @@ def reset_password(*, user, actor, new_password, require_change_at_login=True, r
     from apps.authentication.services import revoke_all_user_tokens
     from django.utils import timezone
 
+    _authorize_target(actor, user)
     user.set_password(new_password)
     user.must_change_password = require_change_at_login
     user.last_password_change_at = timezone.now()
@@ -165,3 +182,9 @@ def reset_password(*, user, actor, new_password, require_change_at_login=True, r
     record_audit(action=AuditAction.USER_PASSWORD_RESET, entity=user, actor=actor,
                  request=request)
     return user
+
+
+def _authorize_target(actor, user):
+    require_company_access(actor, user)
+    if user.is_superuser or UserRole.objects.filter(user=user, is_active=True, role__code="ADMIN").exists():
+        require_super_admin(actor)

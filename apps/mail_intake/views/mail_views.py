@@ -357,6 +357,8 @@ class MailIntakeViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         is the one endpoint a human can click repeatedly (spec 34).
         """
         from django.conf import settings
+        from common.permissions.company import require_super_admin
+        require_super_admin(request.user)
 
         from apps.mail_intake.services.intake_orchestrator import run_intake
 

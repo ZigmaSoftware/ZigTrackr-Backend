@@ -5,6 +5,7 @@ system (spec 23) and must not pay for nested detail it never renders.
 """
 
 from rest_framework import serializers
+from common.serializers.company import CompanyRelatedFieldsMixin
 
 from apps.accounts.serializers import UserLiteSerializer
 from apps.bugs.constants import BugStatus, Environment
@@ -130,7 +131,7 @@ class BugDetailSerializer(BugListSerializer):
         return mail.message_id or mail.provider_message_id or None
 
 
-class BugWriteSerializer(serializers.ModelSerializer):
+class BugWriteSerializer(CompanyRelatedFieldsMixin, serializers.ModelSerializer):
     """Create/update payload, addressing masters by their public UUID."""
 
     project = serializers.SlugRelatedField(

@@ -6,6 +6,7 @@ from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 
 from apps.accounts.models import Role, UserRole
+from apps.bugs.tests.factories import make_company
 
 User = get_user_model()
 PASSWORD = "Zigma@12345"
@@ -15,7 +16,7 @@ class AuthFlowTests(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.user = User.objects.create(username="kiran", full_name="Kiran Kumar",
-                                       email="kiran@example.com")
+                                       email="kiran@example.com", company=make_company())
         cls.user.set_password(PASSWORD)
         cls.user.save()
         role = Role.objects.create(code="DEVELOPER", name="Developer")
@@ -185,13 +186,24 @@ class AuthFlowTests(TestCase):
         self.user.save()
         self.assertEqual(self._login().status_code, 401)
 
+    def test_company_less_staff_cannot_authenticate(self):
+        self.user.company = None
+        self.user.save(update_fields=["company"])
+        self.assertEqual(self._login().status_code, 401)
+
+    def test_disabled_company_ends_existing_staff_session(self):
+        self.assertEqual(self._login().status_code, 200)
+        self.user.company.is_active = False
+        self.user.company.save(update_fields=["is_active"])
+        self.assertEqual(self.client.get("/api/v1/auth/me/").status_code, 401)
+
 
 class LoginThrottleTests(TestCase):
     """Spec 20.5 / 46: login must be rate limited."""
 
     @classmethod
     def setUpTestData(cls):
-        cls.user = User.objects.create(username="target", full_name="Target")
+        cls.user = User.objects.create(username="target", full_name="Target", company=make_company())
         cls.user.set_password(PASSWORD)
         cls.user.save()
 

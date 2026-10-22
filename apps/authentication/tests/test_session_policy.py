@@ -17,7 +17,8 @@ PASSWORD = "Session@12345"
 class SessionPolicyTests(TestCase):
     @classmethod
     def setUpTestData(cls):
-        cls.user = get_user_model().objects.create_user(username="session_user", password=PASSWORD)
+        from apps.bugs.tests.factories import make_company
+        cls.user = get_user_model().objects.create_user(username="session_user", password=PASSWORD, company=make_company())
 
     def setUp(self):
         cache.clear()

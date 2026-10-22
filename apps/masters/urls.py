@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from apps.masters.views import (
+    CompanyViewSet,
     DepartmentViewSet,
     ModuleViewSet,
     PriorityViewSet,
@@ -13,6 +14,7 @@ from apps.masters.views import (
 )
 
 router = DefaultRouter()
+router.register(r"companies", CompanyViewSet, basename="company")
 router.register(r"projects", ProjectViewSet, basename="project")
 router.register(r"modules", ModuleViewSet, basename="module")
 router.register(r"submodules", SubmoduleViewSet, basename="submodule")

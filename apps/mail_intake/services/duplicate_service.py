@@ -15,6 +15,7 @@ once per run so overlapping cron ticks do not both poll the mailbox.
 """
 
 import logging
+import hashlib
 
 from django.db import IntegrityError, transaction
 
@@ -37,7 +38,21 @@ def register_mail(parsed, *, dedupe_key, normalized_subject="", normalized_body=
     Never raises IntegrityError to the caller: a losing race is an ordinary
     outcome here, not an error.
     """
-    existing = find_existing(dedupe_key)
+    from apps.masters.models import CompanyMaster
+    from django.conf import settings
+
+    address = (mailbox_address or "").strip().lower()
+    company = CompanyMaster.objects.filter(support_email__iexact=address, is_active=True, is_deleted=False).first() if address else None
+    if company is None and address and address == settings.MAIL_INTAKE_USERNAME.strip().lower():
+        company = CompanyMaster.objects.filter(code="ZIGMA", is_active=True, is_deleted=False).first()
+    legacy_key = dedupe_key
+    scope = f"company:{company.unique_id}" if company else f"unmapped:{address}"
+    dedupe_key = hashlib.sha256(f"{scope}:{legacy_key}".encode()).hexdigest()
+    # Retain compatibility with pre-company fingerprints without letting an
+    # identical Message-ID in another company's mailbox suppress new intake.
+    existing = find_existing(dedupe_key) or MailIntake.objects.filter(
+        dedupe_key=legacy_key, company=company,
+    ).first()
     if existing is not None:
         return existing, False
 
@@ -49,6 +64,7 @@ def register_mail(parsed, *, dedupe_key, normalized_subject="", normalized_body=
         # handler below can recover past.
         with transaction.atomic():
             mail = MailIntake.objects.create(
+                company=company,
                 dedupe_key=dedupe_key,
                 provider_message_id=parsed.provider_message_id,
                 provider_thread_id=parsed.provider_thread_id,

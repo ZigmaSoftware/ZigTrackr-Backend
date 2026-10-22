@@ -1,4 +1,5 @@
 from .masters import (
+    CompanySerializer,
     DepartmentSerializer,
     ModuleSerializer,
     PrioritySerializer,
@@ -11,6 +12,7 @@ from .masters import (
 )
 
 __all__ = [
+    "CompanySerializer",
     "DepartmentSerializer", "ModuleSerializer", "PrioritySerializer",
     "ProjectSerializer", "RootCauseTypeSerializer", "SeveritySerializer",
     "SiteSerializer", "SubmoduleSerializer", "TeamSerializer",

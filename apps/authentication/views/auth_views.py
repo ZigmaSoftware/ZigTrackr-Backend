@@ -69,7 +69,8 @@ class LoginView(AuthAPIView):
 
         user = authenticate(request, username=username, password=password)
 
-        if user is None:
+        from common.permissions.company import can_access_company
+        if user is None or not can_access_company(user, user):
             LoginAuditLog.objects.create(
                 attempted_username=username[:150], was_successful=False,
                 failure_reason="invalid_credentials",
@@ -143,6 +144,9 @@ class RefreshView(AuthAPIView):
             # token is burned here; replaying it later is detected.
             user_id = refresh.payload.get("user_id")
             user = get_user_model().objects.get(id=user_id, is_active=True, is_deleted=False)
+            from common.permissions.company import can_access_company
+            if not can_access_company(user, user):
+                raise AuthenticationFailed("Your company access is inactive.")
             validate_session(refresh, user)
             new_refresh = refresh
             if settings.SIMPLE_JWT.get("ROTATE_REFRESH_TOKENS"):

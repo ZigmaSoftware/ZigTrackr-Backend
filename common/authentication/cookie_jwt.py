@@ -43,6 +43,9 @@ class CookieJWTAuthentication(JWTAuthentication):
 
         if not user.is_active or getattr(user, "is_deleted", False):
             raise exceptions.AuthenticationFailed("User account is inactive.")
+        from common.permissions.company import can_access_company
+        if not can_access_company(user, user):
+            raise exceptions.AuthenticationFailed("Your company access is inactive. Contact Super Admin.")
 
         validate_session(validated_token, user)
 

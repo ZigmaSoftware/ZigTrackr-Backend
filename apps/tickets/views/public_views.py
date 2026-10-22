@@ -28,11 +28,14 @@ from apps.tickets.services.chat_service import (
     acknowledge_messages, change_message, message_role_labels, send_message, serialize_message,
 )
 from apps.tickets.services.public_track_service import (
-    matching_ticket, public_ticket_data, reopen_public_ticket,
-    set_track_cookie, verified_ticket,
+    COOKIE_NAME, COOKIE_PATH, confirm_public_ticket_closed,
+    public_ticket_data, public_ticket_list, reopen_public_ticket,
+    set_track_cookie, verified_email, verified_ticket,
 )
+from apps.tickets.services.ticket_otp_service import issue_otp, verify_otp
 from apps.tickets.services.timeline_service import build_ticket_timeline
 from common.responses import ok
+from common.throttling import PublicOtpThrottle, PublicOtpVerifyThrottle
 
 
 class PublicTicketLookupThrottle(AnonRateThrottle):
@@ -104,30 +107,119 @@ class PublicTicketLookupView(APIView):
         }, message="Ticket found.")
 
 
+class PublicOtpRequestSerializer(serializers.Serializer):
+    """Sign-in asks only for the address; the code proves it."""
+
+    email = serializers.EmailField()
+
+
+class PublicOtpVerifySerializer(PublicOtpRequestSerializer):
+    code = serializers.CharField(min_length=6, max_length=6, trim_whitespace=True)
+
+
 @method_decorator(csrf_protect, name="dispatch")
 @method_decorator(never_cache, name="dispatch")
-class PublicTrackVerifyView(APIView):
+class PublicTrackRequestOtpView(APIView):
+    """Step 1 of 2: email a passcode if the address owns any ticket.
+
+    The response is byte-identical whether or not it does. That is the whole
+    point -- a differing answer would turn this into an oracle for which
+    addresses have raised tickets, which is exactly what the passcode is
+    meant to protect.
+    """
+
     authentication_classes = []
     permission_classes = [AllowAny]
-    throttle_classes = [PublicTicketLookupThrottle]
+    throttle_classes = [PublicOtpThrottle]
 
     def post(self, request):
-        serializer = PublicTicketLookupSerializer(data=request.data)
+        serializer = PublicOtpRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        ticket = matching_ticket(
-            serializer.validated_data["ticket_no"],
-            serializer.validated_data["email"],
+        issue_otp(email=serializer.validated_data["email"], request=request)
+        # No cookie is set here: possession of the mailbox is not yet proven.
+        return ok(
+            {"otp_sent": True},
+            message="If that address has any tickets, we've emailed a code.",
         )
-        if not ticket:
-            response = ok({"found": False}, message="No matching ticket.")
-            response.delete_cookie(
-                "zigtrackr_public_ticket", path="/api/v1/tickets/public/track/",
-            )
-            return response
-        response = ok(public_ticket_data(ticket), message="Ticket verified.")
-        set_track_cookie(response, ticket)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+@method_decorator(never_cache, name="dispatch")
+class PublicTrackVerifyOtpView(APIView):
+    """Step 2 of 2: the only place a tracking session is issued."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [PublicOtpVerifyThrottle]
+
+    def post(self, request):
+        serializer = PublicOtpVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        # Raises WorkflowValidationError (400) on a bad or expired code, so a
+        # failure can never fall through to the cookie below.
+        email = verify_otp(
+            email=serializer.validated_data["email"],
+            code=serializer.validated_data["code"],
+            request=request,
+        )
+        response = ok(
+            {"email": email, "tickets": public_ticket_list(email)},
+            message="Signed in.",
+        )
+        set_track_cookie(response, email)
         return response
 
+
+
+def _ticket_no(request):
+    """Which of the caller's tickets this request is about.
+
+    Read from the query string or body, never trusted on its own:
+    verified_ticket re-checks ownership against the address in the signed
+    cookie, so a guessed number is worthless. Absent means "the most recent",
+    which keeps older single-ticket clients working.
+    """
+    return (
+        request.query_params.get("ticket_no")
+        or (request.data.get("ticket_no") if isinstance(request.data, dict) else None)
+        or ""
+    )
+
+
+@method_decorator(never_cache, name="dispatch")
+class PublicTrackListView(APIView):
+    """Every ticket belonging to the signed-in address."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        email = verified_email(request)
+        return ok({"email": email, "tickets": public_ticket_list(email)})
+
+
+@method_decorator(csrf_protect, name="dispatch")
+@method_decorator(never_cache, name="dispatch")
+class PublicTrackSignoutView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        response = ok(None, message="Signed out.")
+        response.delete_cookie(COOKIE_NAME, path=COOKIE_PATH, samesite="Lax")
+        return response
+
+
+@method_decorator(csrf_protect, name="dispatch")
+@method_decorator(never_cache, name="dispatch")
+class PublicTrackCloseView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        ticket = verified_ticket(request, _ticket_no(request))
+        ticket = confirm_public_ticket_closed(ticket=ticket)
+        return ok(public_ticket_data(ticket), message="Ticket closed. Thank you for confirming.")
 
 @method_decorator(never_cache, name="dispatch")
 class PublicTrackTicketView(APIView):
@@ -135,7 +227,7 @@ class PublicTrackTicketView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        return ok(public_ticket_data(verified_ticket(request)))
+        return ok(public_ticket_data(verified_ticket(request, _ticket_no(request))))
 
 
 @method_decorator(never_cache, name="dispatch")
@@ -144,7 +236,7 @@ class PublicTrackActivityView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        ticket = verified_ticket(request)
+        ticket = verified_ticket(request, _ticket_no(request))
         return ok(build_ticket_timeline(ticket, public=True))
 
 
@@ -160,14 +252,14 @@ class PublicTrackChatView(APIView):
     throttle_classes = [PublicTrackChatThrottle]
 
     def get(self, request):
-        ticket = verified_ticket(request)
+        ticket = verified_ticket(request, _ticket_no(request))
         messages = list(ticket.chat_messages.select_related("reply_to_message").order_by("created_at", "id"))
         role_labels = message_role_labels(messages)
         return ok([serialize_message(row, requester_email=ticket.reported_by_email,
                                      role_labels=role_labels) for row in messages])
 
     def post(self, request):
-        ticket = verified_ticket(request)
+        ticket = verified_ticket(request, _ticket_no(request))
         serializer = PublicTrackMessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         row = send_message(
@@ -186,7 +278,7 @@ class PublicTrackChatActionView(APIView):
     throttle_classes = [PublicTrackChatThrottle]
 
     def post(self, request, message_id):
-        ticket = verified_ticket(request)
+        ticket = verified_ticket(request, _ticket_no(request))
         row = change_message(ticket=ticket, message_id=message_id,
                              action=request.data.get("action"),
                              requester_email=ticket.reported_by_email,
@@ -207,7 +299,7 @@ class PublicTrackChatReceiptView(APIView):
     throttle_classes = [PublicTrackChatThrottle]
 
     def post(self, request):
-        ticket = verified_ticket(request)
+        ticket = verified_ticket(request, _ticket_no(request))
         serializer = PublicTrackReceiptSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         return ok(acknowledge_messages(ticket=ticket,
@@ -232,7 +324,7 @@ class PublicTrackReopenView(APIView):
     throttle_classes = [PublicTrackChatThrottle]
 
     def post(self, request):
-        ticket = verified_ticket(request)
+        ticket = verified_ticket(request, _ticket_no(request))
         serializer = PublicTrackReopenSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         ticket = reopen_public_ticket(

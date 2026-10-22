@@ -3,16 +3,23 @@
 from django.db import transaction
 
 from apps.audit.models import AuditAction
+from apps.notifications.models import NotificationType
+from apps.notifications.services import notify
 from apps.tickets.models import SupportTicket, TicketAssignmentHistory
 from apps.tickets.services.activity_service import record_activity
 from apps.tickets.services.policy import REASSIGNABLE_STATUSES
 from common.exceptions.domain import WorkflowValidationError
 from common.services.audit import record_audit
+from common.permissions.company import require_company_access, validate_company_relations
 
 
 @transaction.atomic
 def reassign_ticket(*, ticket, new_owner, actor, reason, routing=None, request=None):
     locked = SupportTicket.objects.select_for_update().select_related("bug", "owner").get(pk=ticket.pk)
+    require_company_access(actor, locked)
+    validate_company_relations(locked.company_id, {"owner": new_owner, **(routing or {})})
+    if routing:
+        raise WorkflowValidationError({"detail": ["Only the assigned developer may edit work details."]})
     effective_status = locked.bug.status if locked.bug_id else locked.status
     if effective_status not in REASSIGNABLE_STATUSES:
         raise WorkflowValidationError({"detail": [
@@ -103,4 +110,17 @@ def reassign_ticket(*, ticket, new_owner, actor, reason, routing=None, request=N
             public_description="Your request has been reassigned to a support specialist.",
             actor=actor,
         )
+    # A BUG ticket delegates to assign_bug above, which already notified the
+    # new owner with a link to the bug itself. Notifying again here would give
+    # them two alerts for one action, the second pointing at the thinner
+    # ticket view.
+    notify(
+        recipients=[] if locked.bug_id else [new_owner],
+        notification_type=NotificationType.TICKET_ASSIGNED,
+        title=f"{locked.reference} assigned to you",
+        message=locked.title,
+        ticket=locked,
+        link=f"/tickets?ticket={locked.unique_id}",
+        actor=actor,
+    )
     return locked

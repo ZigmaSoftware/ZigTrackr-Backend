@@ -1,14 +1,16 @@
 """Safe, readable requester mail thread for ticket details."""
 
 from apps.mail_intake.models import MailIntake
-from apps.mail_intake.services.mail_normalizer import clean_readable_body
+from apps.mail_intake.services.mail_normalizer import clean_readable_body, html_to_text
 
 
-def request_messages(ticket):
-    mails = list(
-        MailIntake.objects.filter(linked_ticket=ticket)
-        .prefetch_related("attachments").order_by("is_thread_reply", "received_at", "id")
-    )
+def request_messages(ticket, *, full_content=False):
+    mails = getattr(ticket, "_description_mails", None)
+    if mails is None:
+        mails = list(
+            MailIntake.objects.filter(linked_ticket=ticket)
+            .prefetch_related("attachments").order_by("is_thread_reply", "received_at", "id")
+        )
     if not mails:
         return [{
             "id": str(ticket.unique_id),
@@ -27,6 +29,7 @@ def request_messages(ticket):
         "from_name": mail.from_name,
         "subject": mail.subject,
         "received_at": mail.received_at,
-        "body": clean_readable_body(mail.body_text, mail.body_html),
+        "body": ((mail.body_text if mail.body_text and mail.body_text.strip() else html_to_text(mail.body_html))
+                 if full_content else clean_readable_body(mail.body_text, mail.body_html)),
         "attachment_count": sum(not row.is_rejected for row in mail.attachments.all()),
     } for mail in mails]
