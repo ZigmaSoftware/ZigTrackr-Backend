@@ -29,9 +29,13 @@ from common.services.audit import record_audit
 
 logger = logging.getLogger(__name__)
 
-ACK_BODY = """Thank you for contacting support.
+ACK_BODY = """Thank you for contacting Zigma Support.
 
 Your request has been logged as {ticket_no}.
+
+Our team will review your request before assignment. We will work to resolve
+your issue as soon as possible during business days and keep you updated on
+the progress.
 
   Subject : {title}
   Status  : {status}
@@ -44,7 +48,11 @@ requests.
 """
 
 
-ASSIGNED_BODY = """Your request has been accepted and is now being worked on.
+ASSIGNED_BODY = """Your request has been accepted, and our team is actively working on it.
+
+We will make every effort to resolve your issue as soon as possible during
+business days. You can track its progress and contact our support team at any
+time.
 
   Ticket  : {ticket_no}
   Subject : {title}

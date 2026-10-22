@@ -254,6 +254,10 @@ def ack_email(*, ticket_no, title, status):
             "Thank you for contacting Zigma Support. Your request has been "
             "logged, and our team will review it before assignment."
         )
+        + _paragraph(
+            "Our team will work to resolve your issue as soon as possible "
+            "during business days. We will keep you updated on the progress."
+        )
         + "</td></tr>"
         + _meta_panel([("Reference", ticket_no), ("Subject", title), ("Status", status)])
         + _signoff(
@@ -277,8 +281,13 @@ def assigned_email(*, ticket_no, title, track_url):
     content = (
         f'<tr><td class="pad" style="padding:0 32px 8px;">'
         + _paragraph(
-            "Your request has been accepted and is now being worked on. You can "
-            "follow its progress and message the team at any time."
+            "Your request has been accepted, and our team is actively working "
+            "on it."
+        )
+        + _paragraph(
+            "We will make every effort to resolve your issue as soon as possible "
+            "during business days. You can track its progress and contact our "
+            "support team at any time."
         )
         + "</td></tr>"
         + _meta_panel([("Ticket", ticket_no), ("Subject", title)])

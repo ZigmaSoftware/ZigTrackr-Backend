@@ -81,6 +81,21 @@ class OutboundMailTests(TestCase):
         self.assertIn("TKT-2610-0001", mail.outbox[0].body)
         self.assertIn("Verified", mail.outbox[1].body)
 
+    def test_received_and_accepted_notices_explain_business_days(self):
+        ticket = make_ticket(ticket_no="TKT-2610-0002")
+        with transaction.atomic():
+            received = queue_acknowledgement(ticket=ticket, to_email="sender@example.com")
+            accepted = queue_assigned_notice(ticket=ticket)
+
+        deliver_outbound_mail(received.pk)
+        deliver_outbound_mail(accepted.pk)
+
+        self.assertIn("business days", mail.outbox[0].body)
+        self.assertIn("keep you updated", mail.outbox[0].body)
+        self.assertIn("progress", mail.outbox[0].body)
+        self.assertIn("business days", mail.outbox[1].body)
+        self.assertIn("actively working on it", mail.outbox[1].body)
+
     def test_smtp_failure_keeps_a_retryable_job(self):
         ticket = make_ticket()
         with transaction.atomic():
