@@ -29,6 +29,10 @@ class UUIDLookupFilter(django_filters.CharFilter):
 class TicketFilter(django_filters.FilterSet):
     company = UUIDLookupFilter(field_name="company__unique_id")
     submodule = django_filters.CharFilter(method="filter_submodule")
+    ledger_scope = django_filters.ChoiceFilter(
+        choices=[(value, value) for value in ("all", "active", "verify", "overdue", "resolved")],
+        method="filter_ledger_scope",
+    )
     search = django_filters.CharFilter(method="filter_search")
     ticket_type = django_filters.MultipleChoiceFilter(choices=TicketType.choices)
     source = django_filters.MultipleChoiceFilter(choices=TicketSource.choices)
@@ -77,10 +81,30 @@ class TicketFilter(django_filters.FilterSet):
             raise ValidationError({"submodule": ["Choose a valid ticket submodule."]})
         if not has_permission(getattr(self.request, "user", None), f"tickets.{value}.access"):
             raise PermissionDenied("You do not have access to this ticket submodule.")
+        if value == "all" and self.request.query_params.get("ledger_scope"):
+            # Ledger views include the resolved records in their summary; the
+            # normal page preset still excludes terminal records by default.
+            return self.filter_assigned(queryset, "assigned", True)
         for field, selected in presets[value].items():
             method = getattr(self, f"filter_{field}", None)
             queryset = method(queryset, field, selected) if method else queryset.filter(**{field: selected})
         return queryset
+
+    def filter_ledger_scope(self, queryset, name, value):
+        if self.request.query_params.get("submodule") != "all":
+            raise ValidationError({"ledger_scope": ["Ledger views require the All Tickets submodule."]})
+        closed = Q(bug__status=TicketStatus.CLOSED) | Q(bug__isnull=True, status=TicketStatus.CLOSED)
+        rejected = Q(bug__status=TicketStatus.REJECTED) | Q(bug__isnull=True, status=TicketStatus.REJECTED)
+        verification = Q(bug__status=TicketStatus.TESTING) | Q(bug__isnull=True, status=TicketStatus.TESTING)
+        if value == "resolved":
+            return queryset.filter(closed)
+        if value == "active":
+            return queryset.exclude(closed | rejected | verification)
+        if value == "verify":
+            return queryset.filter(verification)
+        if value == "overdue":
+            return queryset.filter(is_overdue=True).exclude(closed | rejected)
+        return queryset.exclude(closed | rejected)
 
     def _resolve_user(self, value):
         value = (value or "").strip()

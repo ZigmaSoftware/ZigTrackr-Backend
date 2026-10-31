@@ -29,7 +29,7 @@ from apps.tickets.services.chat_service import (
 )
 from apps.tickets.services.public_track_service import (
     COOKIE_NAME, COOKIE_PATH, confirm_public_ticket_closed,
-    public_ticket_data, public_ticket_list, reopen_public_ticket,
+    public_ticket_data, public_ticket_list, reopen_public_ticket, submit_public_ticket_review,
     set_track_cookie, verified_email, verified_ticket,
 )
 from apps.tickets.services.ticket_otp_service import issue_otp, verify_otp
@@ -220,6 +220,29 @@ class PublicTrackCloseView(APIView):
         ticket = verified_ticket(request, _ticket_no(request))
         ticket = confirm_public_ticket_closed(ticket=ticket)
         return ok(public_ticket_data(ticket), message="Ticket closed. Thank you for confirming.")
+
+
+class PublicTrackReviewSerializer(serializers.Serializer):
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+    comment = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+
+@method_decorator(csrf_protect, name="dispatch")
+@method_decorator(never_cache, name="dispatch")
+class PublicTrackReviewView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        ticket = verified_ticket(request, _ticket_no(request))
+        serializer = PublicTrackReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ticket = submit_public_ticket_review(
+            ticket=ticket,
+            rating=serializer.validated_data["rating"],
+            comment=serializer.validated_data.get("comment", ""),
+        )
+        return ok(public_ticket_data(ticket), message="Thank you for your review.")
 
 @method_decorator(never_cache, name="dispatch")
 class PublicTrackTicketView(APIView):

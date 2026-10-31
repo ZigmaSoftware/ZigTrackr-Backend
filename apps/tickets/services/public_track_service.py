@@ -174,6 +174,9 @@ def public_ticket_data(ticket):
         "unread_count": ticket.chat_messages.filter(
             sender_type="STAFF", read_at__isnull=True, is_deleted=False,
         ).count(),
+        "review_rating": ticket.requester_rating,
+        "review_comment": ticket.requester_review_comment,
+        "reviewed_at": ticket.requester_reviewed_at,
     }
 
 
@@ -239,6 +242,27 @@ def confirm_public_ticket_closed(*, ticket):
     return locked
 
 
+@transaction.atomic
+def submit_public_ticket_review(*, ticket, rating, comment):
+    rating = int(rating)
+    comment = (comment or "").strip()
+    if rating < 1 or rating > 5:
+        raise WorkflowValidationError({"rating": ["Choose a rating from 1 to 5 stars."]})
+    if rating <= 2 and not comment:
+        raise WorkflowValidationError({"comment": ["Please tell us what went wrong for a 1 or 2 star rating."]})
+    if len(comment) > 2000:
+        raise WorkflowValidationError({"comment": ["Comment must be 2000 characters or fewer."]})
+
+    locked = SupportTicket.objects.select_for_update().get(pk=ticket.pk)
+    if effective_status(locked) not in (TicketStatus.CLOSED, TicketStatus.REJECTED):
+        raise WorkflowValidationError({"detail": ["A review is available after the ticket is closed."]})
+    locked.requester_rating = rating
+    locked.requester_review_comment = comment
+    locked.requester_reviewed_at = timezone.now()
+    locked.save(update_fields=["requester_rating", "requester_review_comment", "requester_reviewed_at", "updated_at"])
+    return locked
+
+
 def public_ticket_list(email):
     """Rows for the signed-in requester's ticket list.
 
@@ -287,5 +311,7 @@ def public_ticket_list(email):
             "created_at": ticket.created_at,
             "last_message_at": ticket.last_message_at,
             "unread_count": ticket.unread,
+            "review_rating": ticket.requester_rating,
+            "review_comment": ticket.requester_review_comment,
         })
     return payload

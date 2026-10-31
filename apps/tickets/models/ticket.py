@@ -129,6 +129,11 @@ class SupportTicket(BaseMaster):
     ack_sent_at = models.DateTimeField(null=True, blank=True)
     ack_message_id = models.CharField(max_length=255, blank=True, default="")
 
+    # ---- REQUESTER FEEDBACK ----
+    requester_rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    requester_review_comment = models.TextField(blank=True, default="")
+    requester_reviewed_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = "support_ticket"
         ordering = ["-id"]

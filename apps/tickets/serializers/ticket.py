@@ -78,6 +78,9 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
     company = NamedRefSerializer(read_only=True)
     can_edit_details = serializers.SerializerMethodField()
     description_messages = serializers.SerializerMethodField()
+    requester_rating = serializers.IntegerField(read_only=True, allow_null=True)
+    requester_review_comment = serializers.CharField(read_only=True)
+    requester_reviewed_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
     def get_fields(self):
         fields = super().get_fields()
@@ -111,6 +114,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
             "created_at", "can_reassign", "can_delete", "reassign_block_reason",
             "allowed_actions", "chat_state", "email_attachment_count", "company", "can_edit_details",
             "description_messages",
+            "requester_rating", "requester_review_comment", "requester_reviewed_at",
         ]
         read_only_fields = fields
 
@@ -404,6 +408,7 @@ class ReviewTicketSerializer(serializers.Serializer):
         choices=["BUG", "SERVICE_REQUEST", "ACCESS_REQUEST"]
     )
     owner = serializers.UUIDField()
+    remarks = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)
 
 
 class ApprovalSerializer(serializers.Serializer):

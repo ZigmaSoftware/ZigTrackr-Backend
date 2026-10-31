@@ -63,6 +63,7 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
     ordering_fields = [
         "ticket_no", "ref_no", "created_at", "status", "ticket_type", "title",
         "expected_closure_date", "age_days", "original_mail_received_at",
+        "effective_expected_closure_date", "ledger_priority_rank",
     ]
     ordering = ["-id"]
     filterset_class = TicketFilter
@@ -110,16 +111,21 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
 
     def get_queryset(self):
         queryset = base_ticket_queryset()
-        if self.action == "list" and self.request.query_params.get("submodule") == "unassigned":
+        if self.action == "list" and self._wants_description_messages():
             from apps.tickets.selectors.queries import with_description_messages
 
             queryset = with_description_messages(queryset)
         return scope_ticket_queryset(queryset, self.request.user)
 
+    def _wants_description_messages(self):
+        """The unassigned queue and the All Tickets ledger both render the intake
+        thread inline; every other listing shows the plain description."""
+        return self.request.query_params.get("submodule") in {"unassigned", "all"}
+
     def get_serializer_context(self):
         context = super().get_serializer_context()
         context["include_description_messages"] = (
-            self.action == "list" and self.request.query_params.get("submodule") == "unassigned"
+            self.action == "list" and self._wants_description_messages()
         )
         return context
 
@@ -417,7 +423,8 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
             raise ValidationError({"owner": ["Choose an active developer."]})
         with transaction.atomic():
             reviewed = route_ticket(ticket=ticket, actor=request.user,
-                                    ticket_type=data["ticket_type"], owner=owner, request=request)
+                                    ticket_type=data["ticket_type"], owner=owner,
+                                    remarks=data.get("remarks", ""), request=request)
             from apps.tickets.services.outbound_mail import queue_assigned_notice
             queue_assigned_notice(ticket=reviewed)
         return ok(SupportTicketDetailSerializer(

@@ -103,6 +103,13 @@ def with_ticket_computed(queryset, today=None):
         effective_expected_closure_date=Coalesce(
             "bug__expected_closure_date", "expected_closure_date"
         ),
+        ledger_priority_rank=Case(
+            When(Q(bug__priority__code="CRITICAL") | Q(bug__priority__isnull=True, priority__code="CRITICAL"), then=Value(4)),
+            When(Q(bug__priority__code="HIGH") | Q(bug__priority__isnull=True, priority__code="HIGH"), then=Value(3)),
+            When(Q(bug__priority__code="MEDIUM") | Q(bug__priority__isnull=True, priority__code="MEDIUM"), then=Value(2)),
+            When(Q(bug__priority__code="LOW") | Q(bug__priority__isnull=True, priority__code="LOW"), then=Value(1)),
+            default=Value(0), output_field=IntegerField(),
+        ),
         effective_last_update_at=Coalesce(
             "bug__latest_update_at",
             Subquery(latest_ticket_update, output_field=DateTimeField()),

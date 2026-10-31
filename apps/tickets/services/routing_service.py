@@ -16,7 +16,7 @@ from common.permissions.company import require_company_access, validate_company_
 
 
 @transaction.atomic
-def route_ticket(*, ticket, actor, ticket_type, owner, request=None):
+def route_ticket(*, ticket, actor, ticket_type, owner, remarks="", request=None):
     locked = SupportTicket.objects.select_for_update().get(pk=ticket.pk)
     require_company_access(actor, locked)
     if locked.company_id is None and is_super_admin(actor):
@@ -61,7 +61,7 @@ def route_ticket(*, ticket, actor, ticket_type, owner, request=None):
     if locked.bug_id:
         from apps.bugs.services.assignment_service import assign_bug
 
-        assign_bug(bug=locked.bug, new_owner=owner, actor=actor, request=request)
+        assign_bug(bug=locked.bug, new_owner=owner, actor=actor, remarks=remarks, request=request)
     else:
         record_activity(
             ticket=locked, event_type="TICKET_ASSIGNED", title="Ticket Assigned",
@@ -76,7 +76,7 @@ def route_ticket(*, ticket, actor, ticket_type, owner, request=None):
                ticket=locked, link=f"/tickets?ticket={locked.unique_id}", actor=actor)
     TicketAssignmentHistory.objects.create(ticket=locked, to_owner=owner, performed_by=actor)
     record_audit(action=AuditAction.TICKET_ASSIGNED, entity=locked, actor=actor,
-                 new_value=owner.display_name, request=request)
+                 new_value=owner.display_name, remarks=remarks, request=request)
     if previous_type != ticket_type:
         record_audit(action=AuditAction.TICKET_TYPE_CHANGED, entity=locked, actor=actor,
                      old_value=previous_type, new_value=ticket_type, request=request)
