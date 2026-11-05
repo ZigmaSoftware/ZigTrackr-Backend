@@ -103,6 +103,12 @@ def with_ticket_computed(queryset, today=None):
         effective_expected_closure_date=Coalesce(
             "bug__expected_closure_date", "expected_closure_date"
         ),
+        # Resolved the same way as the date: a confirmed BUG keeps its schedule
+        # on the bug record, so reading the two from different sources would
+        # pair one row's date with another row's time.
+        effective_expected_closure_time=Coalesce(
+            "bug__expected_closure_time", "expected_closure_time"
+        ),
         ledger_priority_rank=Case(
             When(Q(bug__priority__code="CRITICAL") | Q(bug__priority__isnull=True, priority__code="CRITICAL"), then=Value(4)),
             When(Q(bug__priority__code="HIGH") | Q(bug__priority__isnull=True, priority__code="HIGH"), then=Value(3)),

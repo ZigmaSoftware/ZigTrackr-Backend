@@ -45,6 +45,9 @@ body, table, td, p, a {{ -webkit-text-size-adjust:100%; -ms-text-size-adjust:100
   .pad {{ padding-left:22px !important; padding-right:22px !important; }}
   .otp-code {{ font-size:30px !important; letter-spacing:8px !important; }}
 }}
+@media screen and (max-width:480px) {{
+  .enquiry-contact {{ display:block !important; width:100% !important; padding:10px 0 !important; border-left:0 !important; }}
+}}
 </style>
 </head>
 <body style="margin:0;padding:0;background-color:{PAGE_BG};font-family:{FONT};color:#303942;">
@@ -139,24 +142,22 @@ SUPPORT_CONTACTS = (
 
 
 def _contacts_block():
-    rows = "".join(
-        f'<tr>'
-        f'<td width="34" valign="top" style="padding:4px 8px 4px 0;font-size:13px;'
-        f'line-height:22px;font-weight:700;color:{BRAND};">{escape(tier)}</td>'
-        f'<td valign="top" style="padding:4px 8px 4px 0;font-size:13px;'
-        f'line-height:22px;color:#414b55;">{escape(name)}</td>'
-        f'<td align="right" valign="top" style="padding:4px 0;font-size:13px;'
-        f'line-height:22px;"><a href="tel:{escape(phone)}" style="color:{BRAND};'
-        f'text-decoration:underline;white-space:nowrap;">{escape(phone)}</a></td>'
-        f'</tr>'
-        for tier, name, phone in SUPPORT_CONTACTS
+    columns = "".join(
+        f'<td class="enquiry-contact" width="33.33%" valign="top" '
+        f'style="width:33.33%;padding:4px 12px;'
+        f'border-left:{"0" if index == 0 else f"1px solid {LINE}"};">'
+        f'<p style="margin:0 0 6px;font-size:13px;line-height:20px;color:#414b55;">'
+        f'<strong style="color:{BRAND};">{escape(tier)}</strong>&nbsp; {escape(name)}</p>'
+        f'<a href="tel:{escape(phone)}" style="font-size:12px;line-height:20px;color:{BRAND};'
+        f'text-decoration:none;white-space:nowrap;">{escape(phone)}</a></td>'
+        for index, (tier, name, phone) in enumerate(SUPPORT_CONTACTS)
     )
     return (
         f'<tr><td class="pad" style="padding:22px 32px;border-top:1px solid {LINE};">'
         f'<p style="margin:0 0 12px;font-size:13px;line-height:20px;font-weight:700;'
         f'color:{BRAND};">For enquiries</p>'
         f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
-        f'border="0" style="border-collapse:collapse;font-family:{FONT};">{rows}</table>'
+        f'border="0" style="border-collapse:collapse;table-layout:fixed;font-family:{FONT};"><tr>{columns}</tr></table>'
         f"</td></tr>"
     )
 
@@ -180,9 +181,7 @@ If you didn't request this code, you can ignore this message -- nothing has
 been accessed.
 
 For enquiries:
-  L1  Dimple   +918567746474
-  L2  Mouly    +919564744476
-  L3  Dinesh   +919264744579
+L1 Dimple +918567746474 | L2 Mouly +919564744476 | L3 Dinesh +919264744579
 
 Zigma Support
 """
@@ -251,13 +250,16 @@ def ack_email(*, ticket_no, title, status):
         f'<tr><td class="pad" style="padding:0 32px 8px;">'
         + _paragraph("Hello,")
         + _paragraph(
-            "Thank you for contacting Zigma Support. Your request has been "
-            "logged, and our team will review it before assignment."
+            "Thank you for contacting Zigma Support. We have received your request "
+            "and logged it for review. Our team will assess the details and route "
+            "it to the appropriate support specialist."
         )
         + _paragraph(
-            "Our team will work to resolve your issue as soon as possible "
-            "during business days. We will keep you updated on the progress."
+            "Requests submitted after <strong>6:00 PM IST</strong> will enter the "
+            "response cycle on the <strong>next business day covered by our "
+            "support schedule</strong>."
         )
+        + _paragraph("We will notify you once your ticket has been created.")
         + "</td></tr>"
         + _meta_panel([("Reference", ticket_no), ("Subject", title), ("Status", status)])
         + _signoff(

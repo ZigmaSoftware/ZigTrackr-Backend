@@ -91,7 +91,9 @@ class TicketFilter(django_filters.FilterSet):
         return queryset
 
     def filter_ledger_scope(self, queryset, name, value):
-        if self.request.query_params.get("submodule") != "all":
+        # The reassign list uses the same ledger stage tabs, applied on top of
+        # its own reassignable policy set.
+        if self.request.query_params.get("submodule") not in {"all", "reassign"}:
             raise ValidationError({"ledger_scope": ["Ledger views require the All Tickets submodule."]})
         closed = Q(bug__status=TicketStatus.CLOSED) | Q(bug__isnull=True, status=TicketStatus.CLOSED)
         rejected = Q(bug__status=TicketStatus.REJECTED) | Q(bug__isnull=True, status=TicketStatus.REJECTED)

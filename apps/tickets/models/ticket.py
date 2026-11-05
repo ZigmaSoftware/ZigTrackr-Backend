@@ -107,6 +107,10 @@ class SupportTicket(BaseMaster):
         max_length=25, choices=TicketStatus.choices, default=TicketStatus.NEW,
     )
     expected_closure_date = models.DateField(null=True, blank=True)
+    # The clock time the developer commits to alongside the date. Nullable so
+    # the thousands of tickets that predate this field stay valid; the start-work
+    # form is what requires it going forward.
+    expected_closure_time = models.TimeField(null=True, blank=True)
 
     # ---- BUG LINKAGE ----
     # Null until an Admin/Team Lead confirms. OneToOne because one ticket yields

@@ -29,14 +29,13 @@ from common.services.audit import record_audit
 
 logger = logging.getLogger(__name__)
 
-ACK_BODY = """Thank you for contacting Zigma Support.
+ACK_BODY = """Thank you for contacting Zigma Support. We have received your request and logged it for review. Our team will assess the details and route it to the appropriate support specialist.
 
-Your request has been logged as {ticket_no}.
+Requests submitted after 6:00 PM IST will enter the response cycle on the next business day covered by our support schedule.
 
-Our team will review your request before assignment. We will work to resolve
-your issue as soon as possible during business days and keep you updated on
-the progress.
+We will notify you once your ticket has been created.
 
+  Reference : {ticket_no}
   Subject : {title}
   Status  : {status}
 

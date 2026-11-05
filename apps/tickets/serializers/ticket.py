@@ -54,6 +54,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
     status_label = serializers.SerializerMethodField()
     effective_status = serializers.SerializerMethodField()
     effective_expected_closure_date = serializers.DateField(read_only=True)
+    effective_expected_closure_time = serializers.TimeField(read_only=True)
     age_days = serializers.IntegerField(read_only=True)
     is_overdue = serializers.BooleanField(read_only=True)
     overdue_days = serializers.IntegerField(read_only=True)
@@ -110,6 +111,7 @@ class SupportTicketListSerializer(serializers.ModelSerializer):
             "title", "project", "module", "priority", "owner", "reported_by",
             "reported_by_email", "reported_by_name", "bug_no", "bug_id",
             "expected_closure_date", "effective_expected_closure_date",
+            "expected_closure_time", "effective_expected_closure_time",
             "age_days", "is_overdue", "overdue_days", "latest_update_at", "current_work_started_at",
             "created_at", "can_reassign", "can_delete", "reassign_block_reason",
             "allowed_actions", "chat_state", "email_attachment_count", "company", "can_edit_details",
@@ -337,6 +339,7 @@ class WorkDetailsSerializer(CompanyRelatedFieldsMixin, serializers.Serializer):
     site = serializers.SlugRelatedField(slug_field="unique_id", queryset=SiteMaster.objects.filter(is_active=True, is_deleted=False), required=False, allow_null=True)
     environment = serializers.ChoiceField(choices=Environment.choices, required=False, allow_blank=True)
     expected_closure_date = serializers.DateField(required=False, allow_null=True)
+    expected_closure_time = serializers.TimeField(required=False, allow_null=True)
     title = serializers.CharField(max_length=255, required=False)
     description = serializers.CharField(required=False, allow_blank=True)
 

@@ -81,7 +81,7 @@ class OutboundMailTests(TestCase):
         self.assertIn("TKT-2610-0001", mail.outbox[0].body)
         self.assertIn("Verified", mail.outbox[1].body)
 
-    def test_received_and_accepted_notices_explain_business_days(self):
+    def test_received_notice_explains_cutoff_and_keeps_accepted_notice_unchanged(self):
         ticket = make_ticket(ticket_no="TKT-2610-0002")
         with transaction.atomic():
             received = queue_acknowledgement(ticket=ticket, to_email="sender@example.com")
@@ -90,11 +90,18 @@ class OutboundMailTests(TestCase):
         deliver_outbound_mail(received.pk)
         deliver_outbound_mail(accepted.pk)
 
-        self.assertIn("business days", mail.outbox[0].body)
-        self.assertIn("keep you updated", mail.outbox[0].body)
-        self.assertIn("progress", mail.outbox[0].body)
+        self.assertIn("Our team will assess the details and route it to the appropriate support specialist.", mail.outbox[0].body)
+        self.assertIn("Requests submitted after 6:00 PM IST will enter the response cycle on the next business day covered by our support schedule.", mail.outbox[0].body)
+        self.assertIn("We will notify you once your ticket has been created.", mail.outbox[0].body)
+        received_html = mail.outbox[0].alternatives[0][0]
+        self.assertIn("appropriate support specialist.", received_html)
+        self.assertIn("<strong>6:00 PM IST</strong>", received_html)
+        self.assertIn("next business day covered by our support schedule", received_html)
+        self.assertIn("We will notify you once your ticket has been created.", received_html)
         self.assertIn("business days", mail.outbox[1].body)
         self.assertIn("actively working on it", mail.outbox[1].body)
+        self.assertNotIn("6:00 PM IST", mail.outbox[1].body)
+        self.assertNotIn("6:00 PM IST", mail.outbox[1].alternatives[0][0])
 
     def test_smtp_failure_keeps_a_retryable_job(self):
         ticket = make_ticket()

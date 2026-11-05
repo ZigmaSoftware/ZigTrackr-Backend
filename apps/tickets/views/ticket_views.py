@@ -118,9 +118,10 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
         return scope_ticket_queryset(queryset, self.request.user)
 
     def _wants_description_messages(self):
-        """The unassigned queue and the All Tickets ledger both render the intake
-        thread inline; every other listing shows the plain description."""
-        return self.request.query_params.get("submodule") in {"unassigned", "all"}
+        """The unassigned queue, the All Tickets ledger and the reassign list all
+        render the intake thread inline; every other listing shows the plain
+        description. The matching prefetch keeps this to one extra query."""
+        return self.request.query_params.get("submodule") in {"unassigned", "all", "reassign"}
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -316,6 +317,10 @@ class SupportTicketViewSet(PermissionByActionMixin, EnvelopeMessageMixin,
             if details is not None:
                 if to_status != TicketStatus.IN_PROGRESS:
                     raise ValidationError({"details": ["Use the work-details action to edit details without starting work."]})
+                # Starting work from the form is a commitment to a delivery
+                # slot, so both halves of it are required. Only this path asks
+                # for them: retakes, bug status changes and resumes reuse the
+                # schedule already on the record.
                 from apps.tickets.services.work_details_service import save_work_details
                 ticket = save_work_details(ticket=ticket, actor=request.user, details=details,
                                            request=request, complete=True)

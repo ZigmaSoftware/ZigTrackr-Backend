@@ -83,6 +83,10 @@ class Bug(BaseMaster):
 
     # ---- SCHEDULE ----
     expected_closure_date = models.DateField(null=True, blank=True)
+    # Mirrors SupportTicket.expected_closure_time: a confirmed BUG keeps its
+    # schedule on the bug record, so the time has to live here too or it is
+    # dropped the moment a ticket is linked to a bug.
+    expected_closure_time = models.TimeField(null=True, blank=True)
 
     # ---- DENORMALISED LATEST (spec 10 sanctions this for fast loading) ----
     latest_remarks = models.TextField(blank=True, default="")

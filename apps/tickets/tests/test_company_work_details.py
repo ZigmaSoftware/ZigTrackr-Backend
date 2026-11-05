@@ -147,7 +147,24 @@ class CompanyWorkDetailsTests(TestCase):
 
     def details(self):
         return {"company": str(self.a.unique_id), "project": str(self.projects[self.a.pk].unique_id),
-                "priority": str(self.priority.unique_id), "severity": str(self.severity.unique_id), "environment": "UAT"}
+                "priority": str(self.priority.unique_id), "severity": str(self.severity.unique_id), "environment": "UAT",
+                # Starting work now commits to a delivery slot.
+                "expected_closure_date": "2026-12-01", "expected_closure_time": "17:30"}
+
+    def test_start_requires_expected_date_and_time(self):
+        """The delivery slot is mandatory when starting work from the form."""
+        for missing in ("expected_closure_date", "expected_closure_time"):
+            with self.subTest(missing=missing):
+                ticket = self.routed()
+                ticket.owner = self.dev
+                ticket.save(update_fields=["owner"])
+                payload = self.details()
+                payload.pop(missing)
+                response = self.client_for(self.dev).post(
+                    f"/api/v1/tickets/{ticket.unique_id}/work-transition/",
+                    {"to_status": "IN_PROGRESS", "details": payload}, format="json")
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn(missing, response.data["errors"])
 
     def test_start_requires_work_details_and_owner(self):
         ticket = self.routed()

@@ -12,7 +12,8 @@ from common.services.audit import record_field_changes
 
 DETAIL_FIELDS = (
     "company", "project", "module", "submodule", "priority", "severity",
-    "department", "site", "environment", "expected_closure_date", "title", "description",
+    "department", "site", "environment", "expected_closure_date", "expected_closure_time",
+    "title", "description",
 )
 BUG_FIELDS = DETAIL_FIELDS
 
@@ -38,6 +39,7 @@ def validate_details(values, *, ticket_type, complete=False):
         for field in required:
             if not values.get(field):
                 errors[field] = ["Select this detail before starting work."]
+
     company, project, module, submodule = (values.get(field) for field in ("company", "project", "module", "submodule"))
     for field in ("company", "project", "module", "submodule", "priority", "severity", "department", "site"):
         value = values.get(field)
@@ -69,6 +71,17 @@ def save_work_details(*, ticket, actor, details, request=None, complete=False):
     values = {**current_details(locked), **details}
     if not values["company"] or values["company"].pk != locked.company_id:
         raise WorkflowValidationError({"company": ["A ticket cannot be moved to another company."]})
+    if complete:
+        # Starting work commits to a delivery slot, so both halves are required.
+        # Checked here rather than in validate_details because ensure_work_details
+        # shares that function on paths (retake, bug status change) that never
+        # show the form and have no way to supply a value.
+        missing = {field: ["Set the expected completion date before starting work."]
+                   for field in ("expected_closure_date",) if not values.get(field)}
+        if not values.get("expected_closure_time"):
+            missing["expected_closure_time"] = ["Set the completion time before starting work."]
+        if missing:
+            raise WorkflowValidationError(missing)
     validate_details(values, ticket_type=locked.ticket_type, complete=complete)
     changes = {}
     for field in DETAIL_FIELDS:
